@@ -26,8 +26,8 @@ class Settings(BaseSettings):
 
     # LLM generation params
     llm_temperature: float = 1.0   # DiffusionGemma 建議 1.0
-    llm_max_tokens: int = 1024
-    llm_enable_thinking: bool = True  # DiffusionGemma chain-of-thought
+    llm_max_tokens: int = 4096     # DiffusionGemma 思考模式需要較大 token 空間
+    llm_enable_thinking: bool = True
 
     class Config:
         env_file = str(BASE_DIR / ".env")

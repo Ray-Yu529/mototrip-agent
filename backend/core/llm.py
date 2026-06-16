@@ -1,8 +1,8 @@
 """
 LLM / Embedding 工廠。
 透過 .env 的 LLM_BACKEND 切換後端：
-  - "ollama"  （預設）本機推論，隱私最高
-  - "nvidia"  NVIDIA NIM 雲端 API，速度快，開發期推薦
+  - "ollama"  本機推論，隱私最高
+  - "nvidia"  NVIDIA NIM 雲端，速度快，開發期推薦
 """
 from functools import lru_cache
 from langchain_core.language_models import BaseChatModel
@@ -14,16 +14,19 @@ from .config import settings
 def get_llm() -> BaseChatModel:
     if settings.llm_backend == "nvidia":
         from langchain_nvidia_ai_endpoints import ChatNVIDIA
-        extra: dict = {}
-        if settings.llm_enable_thinking:
-            extra["chat_template_kwargs"] = {"enable_thinking": True}
-        return ChatNVIDIA(
+        llm = ChatNVIDIA(
             api_key=settings.nvidia_api_key,
             model=settings.llm_model,
             temperature=settings.llm_temperature,
             max_tokens=settings.llm_max_tokens,
-            model_kwargs=extra,
         )
+        # chat_template_kwargs 須透過 bind 傳入 extra_body，不能放 model_kwargs
+        if settings.llm_enable_thinking:
+            return llm.bind(
+                extra_body={"chat_template_kwargs": {"enable_thinking": True}}
+            )
+        return llm
+
     # 預設 Ollama
     from langchain_ollama import ChatOllama
     return ChatOllama(
@@ -40,7 +43,7 @@ def get_embeddings() -> Embeddings:
         from langchain_nvidia_ai_endpoints import NVIDIAEmbeddings
         return NVIDIAEmbeddings(
             api_key=settings.nvidia_api_key,
-            model="baai/bge-m3",  # 多語言，支援繁體中文評論
+            model="baai/bge-m3",
         )
     from langchain_ollama import OllamaEmbeddings
     return OllamaEmbeddings(

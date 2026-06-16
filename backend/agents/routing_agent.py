@@ -69,15 +69,27 @@ async def generate_itinerary(
 
 
 def _parse_json_safe(raw: str) -> dict:
-    cleaned = re.sub(r"```(?:json)?|```", "", raw).strip()
+    logger.debug(f"LLM 原始輸出（前 300 字）: {raw[:300]}")
+
+    # 1. 剝掉 DiffusionGemma 的 <think>...</think> 思考區塊
+    cleaned = re.sub(r"<think>.*?</think>", "", raw, flags=re.DOTALL)
+
+    # 2. 剝掉 markdown code fence
+    cleaned = re.sub(r"```(?:json)?|```", "", cleaned).strip()
+
+    # 3. 直接 parse
     try:
         return json.loads(cleaned)
     except json.JSONDecodeError:
-        match = re.search(r"\{.*\}", cleaned, re.DOTALL)
-        if match:
-            try:
-                return json.loads(match.group())
-            except json.JSONDecodeError:
-                pass
-    logger.warning(f"Routing LLM 輸出非 JSON: {raw[:200]}")
+        pass
+
+    # 4. 找最外層的 { ... }
+    match = re.search(r"\{.*\}", cleaned, re.DOTALL)
+    if match:
+        try:
+            return json.loads(match.group())
+        except json.JSONDecodeError:
+            pass
+
+    logger.warning(f"Routing LLM 輸出非 JSON，完整內容: {raw}")
     return {"error": "行程生成失敗，請重試", "raw": raw[:500]}
