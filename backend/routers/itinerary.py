@@ -3,6 +3,7 @@ from pydantic import BaseModel, Field
 from ..agents.weather_agent import fetch_forecast, parse_riding_advice
 from ..agents.rag_agent import analyze_lodging
 from ..agents.routing_agent import generate_itinerary
+from ..core.geocode import enrich_itinerary_coords
 
 router = APIRouter(prefix="/itinerary", tags=["itinerary"])
 
@@ -68,5 +69,12 @@ async def generate(req: ItineraryRequest):
 
     if "error" in result:
         raise HTTPException(status_code=500, detail=result["error"])
+
+    # 補上各 stop 的經緯度（供前端地圖使用）
+    if result.get("itinerary"):
+        await enrich_itinerary_coords(result["itinerary"], region_hint=req.destination)
+
+    # 附帶天氣資訊，前端不需再打一次
+    result["weather"] = weather_info
 
     return result

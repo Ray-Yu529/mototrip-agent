@@ -3,6 +3,7 @@ MotoTrip Agent — Streamlit 前端
 執行：streamlit run frontend/app.py
 """
 import streamlit as st
+import pydeck as pdk
 import httpx
 import json
 from datetime import date, timedelta
@@ -45,6 +46,70 @@ st.markdown("""
         padding: 0.8rem 1rem;
         margin: 0.4rem 0;
         font-size: 0.9rem;
+    }
+
+    /* ── 每日標題列 + 天氣晶片 ───────────────────────────── */
+    .day-header {
+        display: flex;
+        align-items: center;
+        gap: 0.8rem;
+        margin: 1.5rem 0 0.8rem 0;
+        padding-bottom: 0.5rem;
+        border-bottom: 2px solid #111;
+    }
+    .day-badge {
+        background: #111;
+        color: #fff;
+        font-weight: 700;
+        font-size: 0.95rem;
+        padding: 0.25rem 0.7rem;
+        border-radius: 4px;
+    }
+    .day-date { color: #555; font-size: 0.9rem; }
+    .weather-chip {
+        margin-left: auto;
+        background: #eef3f8;
+        border: 1px solid #d4e0ec;
+        border-radius: 16px;
+        padding: 0.2rem 0.8rem;
+        font-size: 0.82rem;
+        color: #2c4a66;
+    }
+
+    /* ── 卡片時間軸 ───────────────────────────── */
+    .timeline { position: relative; margin-left: 0.5rem; padding-left: 1.5rem;
+                border-left: 2px solid #e3e3e3; }
+    .tl-item { position: relative; margin-bottom: 1rem; }
+    .tl-dot {
+        position: absolute;
+        left: -2.05rem;
+        top: 0.55rem;
+        width: 0.85rem;
+        height: 0.85rem;
+        border-radius: 50%;
+        border: 3px solid #fff;
+        box-shadow: 0 0 0 1px #ccc;
+    }
+    .stop-card {
+        background: #ffffff;
+        border: 1px solid #ececec;
+        border-left: 4px solid #999;
+        border-radius: 8px;
+        padding: 0.7rem 1rem;
+        box-shadow: 0 1px 4px rgba(0,0,0,0.06);
+        transition: box-shadow 0.15s ease;
+    }
+    .stop-card:hover { box-shadow: 0 3px 12px rgba(0,0,0,0.12); }
+    .stop-time {
+        font-weight: 700; color: #111; font-size: 0.9rem;
+        font-variant-numeric: tabular-nums;
+    }
+    .stop-place { font-weight: 600; color: #1a1a1a; font-size: 1.02rem; }
+    .stop-note  { color: #666; font-size: 0.85rem; margin-top: 0.2rem; }
+    .stop-tag {
+        display: inline-block; font-size: 0.72rem; color: #fff;
+        padding: 0.05rem 0.5rem; border-radius: 10px; margin-left: 0.4rem;
+        vertical-align: middle;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -148,27 +213,109 @@ with tab_itinerary:
             f"{data.get('theme', '行程')} · {data.get('transport', '')} · {total_days} 天"
         )
 
-        TYPE_EMOJI = {
-            "餐廳": "🍜", "景點": "📍", "住宿": "🏠",
-            "加油站": "⛽", "補給": "🏪",
+        # 類型 → emoji / 顏色（HEX 給卡片、RGB 給地圖）
+        TYPE_META = {
+            "餐廳":   {"emoji": "🍜", "hex": "#f57c00", "rgb": [245, 124, 0]},
+            "景點":   {"emoji": "📍", "hex": "#2e7d32", "rgb": [46, 125, 50]},
+            "住宿":   {"emoji": "🏠", "hex": "#1565c0", "rgb": [21, 101, 192]},
+            "加油站": {"emoji": "⛽", "hex": "#6a1b9a", "rgb": [106, 27, 154]},
+            "補給":   {"emoji": "🏪", "hex": "#00838f", "rgb": [0, 131, 143]},
         }
+        DEFAULT_META = {"emoji": "▸", "hex": "#757575", "rgb": [117, 117, 117]}
+
+        def meta_of(stop_type: str) -> dict:
+            return TYPE_META.get(stop_type, DEFAULT_META)
 
         itinerary = data.get("itinerary", [])
+        weather = data.get("weather", {})
+
         if itinerary:
+            # ── 路線地圖 ──────────────────────────────────────────
+            map_points, path_coords = [], []
+            for day_data in itinerary:
+                for stop in day_data.get("stops", []):
+                    if "lat" in stop and "lon" in stop:
+                        m = meta_of(stop.get("type", ""))
+                        map_points.append({
+                            "lat": stop["lat"],
+                            "lon": stop["lon"],
+                            "place": stop.get("place", ""),
+                            "label": f"D{day_data.get('day','')} {stop.get('time','')} {stop.get('place','')}",
+                            "color": m["rgb"],
+                        })
+                        path_coords.append([stop["lon"], stop["lat"]])
+
+            if map_points:
+                avg_lat = sum(p["lat"] for p in map_points) / len(map_points)
+                avg_lon = sum(p["lon"] for p in map_points) / len(map_points)
+
+                scatter = pdk.Layer(
+                    "ScatterplotLayer",
+                    data=map_points,
+                    get_position="[lon, lat]",
+                    get_fill_color="color",
+                    get_radius=600,
+                    pickable=True,
+                    opacity=0.85,
+                )
+                path = pdk.Layer(
+                    "PathLayer",
+                    data=[{"path": path_coords}],
+                    get_path="path",
+                    get_color=[17, 17, 17],
+                    width_min_pixels=3,
+                )
+                st.pydeck_chart(pdk.Deck(
+                    map_style="road",
+                    initial_view_state=pdk.ViewState(
+                        latitude=avg_lat, longitude=avg_lon, zoom=9, pitch=0,
+                    ),
+                    layers=[path, scatter],
+                    tooltip={"text": "{label}"},
+                ))
+            else:
+                st.info("地圖座標解析中或無資料，以下為文字行程。")
+
+            # ── 卡片時間軸（按 Day 分組）──────────────────────────
             for day_data in itinerary:
                 day_num = day_data.get("day", "")
                 day_date = day_data.get("date", "")
-                st.markdown(f"#### Day {day_num}　{day_date}")
+                w_chip = ""
+                if weather and not weather.get("error"):
+                    w_chip = (
+                        f'<span class="weather-chip">🌡 {weather.get("temp_range","")}'
+                        f'　☔ {weather.get("rain_risk_pct","?")}%</span>'
+                    )
+                st.markdown(
+                    f'<div class="day-header">'
+                    f'<span class="day-badge">Day {day_num}</span>'
+                    f'<span class="day-date">{day_date}</span>{w_chip}</div>',
+                    unsafe_allow_html=True,
+                )
+
+                items_html = ['<div class="timeline">']
                 for stop in day_data.get("stops", []):
-                    col_time, col_info = st.columns([1, 5])
-                    with col_time:
-                        st.markdown(f"**{stop.get('time', '')}**")
-                    with col_info:
-                        emoji = TYPE_EMOJI.get(stop.get("type", ""), "▸")
-                        st.markdown(f"{emoji} **{stop.get('place', '')}**")
-                        if stop.get("note"):
-                            st.caption(stop["note"])
-                st.divider()
+                    m = meta_of(stop.get("type", ""))
+                    note = (
+                        f'<div class="stop-note">{stop["note"]}</div>'
+                        if stop.get("note") else ""
+                    )
+                    tag = (
+                        f'<span class="stop-tag" style="background:{m["hex"]}">'
+                        f'{stop.get("type","")}</span>'
+                        if stop.get("type") else ""
+                    )
+                    items_html.append(
+                        f'<div class="tl-item">'
+                        f'<span class="tl-dot" style="background:{m["hex"]}"></span>'
+                        f'<div class="stop-card" style="border-left-color:{m["hex"]}">'
+                        f'<span class="stop-time">{stop.get("time","")}</span>'
+                        f'　<span class="stop-place">{m["emoji"]} {stop.get("place","")}</span>'
+                        f'{tag}{note}'
+                        f'</div></div>'
+                    )
+                items_html.append("</div>")
+                st.markdown("".join(items_html), unsafe_allow_html=True)
         else:
             st.warning("未能解析行程，顯示原始輸出：")
             st.json(data)

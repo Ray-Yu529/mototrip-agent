@@ -2,5 +2,6 @@
 __pycache__/
 *.pyc
 data/chroma_db/
+data/geocode_cache.json
 .venv/
 venv/
