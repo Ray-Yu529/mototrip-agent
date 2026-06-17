@@ -64,7 +64,8 @@ async def generate(req: ItineraryRequest):
     poi_list = list(req.poi_list)               # routing 用的扁平清單
     poi_pool_by_city: dict[str, dict] = {}      # 回傳給前端
     # 城市多時縮減每類數量，控制 Google Places 用量
-    limit_each = 2 if len(cities) > 2 else 4
+    # （至少 3 個，讓 LLM 能為每個餐廳/景點 stop 給 2–3 個候選供使用者挑選）
+    limit_each = 3 if len(cities) > 2 else 4
 
     for city in cities:
         raw_w = await fetch_forecast(city)

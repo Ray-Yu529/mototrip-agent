@@ -80,16 +80,28 @@ async def enrich_itinerary_coords(itinerary: list[dict], region_hint: str = "") 
     async with httpx.AsyncClient() as client:
         for day in itinerary:
             for stop in day.get("stops", []):
-                place = stop.get("place", "")
-                if not place:
-                    continue
-                cache = _load_cache()
-                was_cached = f"{place}@{region_hint}" in cache
+                # 收集本 stop 需定位的地名：主地點 + 各候選（去重）
+                places = []
+                main = stop.get("place", "")
+                if main:
+                    places.append(main)
+                for opt in stop.get("options", []) or []:
+                    p = opt.get("place", "")
+                    if p and p not in places:
+                        places.append(p)
 
-                coord = await geocode_one(client, place, region_hint)
-                if coord:
-                    stop["lat"] = coord[0]
-                    stop["lon"] = coord[1]
+                for idx, place in enumerate(places):
+                    cache = _load_cache()
+                    was_cached = f"{place}@{region_hint}" in cache
 
-                if not was_cached:
-                    await asyncio.sleep(1.0)  # 遵守 Nominatim 速率限制
+                    coord = await geocode_one(client, place, region_hint)
+                    if coord:
+                        if idx == 0:
+                            stop["lat"], stop["lon"] = coord[0], coord[1]
+                        # 同步寫回對應候選，供前端切換時更新地圖
+                        for opt in stop.get("options", []) or []:
+                            if opt.get("place") == place:
+                                opt["lat"], opt["lon"] = coord[0], coord[1]
+
+                    if not was_cached:
+                        await asyncio.sleep(1.0)  # 遵守 Nominatim 速率限制

@@ -112,19 +112,22 @@ st.markdown("""
     }
 
     /* ── 卡片時間軸 ───────────────────────────── */
-    .timeline { position: relative; margin-left: 0.5rem; padding-left: 1.5rem;
-                border-left: 2px solid #e3e3e3; }
-    .tl-item { position: relative; margin-bottom: 1rem; }
+    .tl-row { position: relative; margin-left: 0.5rem; padding-left: 1.5rem;
+              border-left: 2px solid #e3e3e3; padding-bottom: 0.5rem; }
+    .tl-transfer { position: relative; margin-left: 0.5rem; padding-left: 1.5rem;
+                   border-left: 2px solid #e3e3e3; color: #5a6b7b;
+                   font-size: 0.82rem; padding-top: 0.1rem; padding-bottom: 0.35rem; }
     .tl-dot {
         position: absolute;
-        left: -2.05rem;
-        top: 0.55rem;
+        left: -0.52rem;
+        top: 0.6rem;
         width: 0.85rem;
         height: 0.85rem;
         border-radius: 50%;
         border: 3px solid #fff;
         box-shadow: 0 0 0 1px #ccc;
     }
+    .stop-parking { color: #8a6d00; font-size: 0.82rem; margin-top: 0.25rem; }
     .stop-card {
         background: #ffffff;
         border: 1px solid #ececec;
@@ -271,11 +274,24 @@ def build_report_html(data: dict) -> str:
         rows = []
         for s in day.get("stops", []):
             emoji = REPORT_EMOJI.get(s.get("type", ""), "▸")
+            transfer = (
+                f'<div class="transfer">🚌 {s.get("transfer","")}</div>'
+                if s.get("transfer") else ""
+            )
             note = f'<div class="note">{s.get("note","")}</div>' if s.get("note") else ""
+            parking = (
+                f'<div class="parking">🅿 {s.get("parking","")}</div>'
+                if s.get("parking") else ""
+            )
+            alts = [o.get("place", "") for o in (s.get("options") or [])][1:]
+            alts_html = (
+                f'<div class="alts">其他選擇：{"、".join(alts)}</div>' if alts else ""
+            )
             rows.append(
                 f'<tr><td class="time">{s.get("time","")}</td>'
-                f'<td><b>{emoji} {s.get("place","")}</b>'
-                f'<span class="tag">{s.get("type","")}</span>{note}</td></tr>'
+                f'<td>{transfer}<b>{emoji} {s.get("place","")}</b>'
+                f'<span class="tag">{s.get("type","")}</span>'
+                f'{note}{parking}{alts_html}</td></tr>'
             )
         days_html.append(
             f'<h2>Day {day.get("day","")} <span class="date">{day.get("date","")}</span></h2>'
@@ -304,6 +320,9 @@ def build_report_html(data: dict) -> str:
   .tag {{ background: #f0f0f0; border-radius: 10px; font-size: .72rem;
           padding: .05rem .5rem; margin-left: .5rem; color: #555; }}
   .note {{ color: #777; font-size: .85rem; margin-top: .2rem; }}
+  .transfer {{ color: #5a6b7b; font-size: .82rem; margin-bottom: .25rem; }}
+  .parking {{ color: #8a6d00; font-size: .82rem; margin-top: .2rem; }}
+  .alts {{ color: #999; font-size: .8rem; margin-top: .2rem; }}
   ul {{ line-height: 1.8; }}
   footer {{ margin-top: 2rem; color: #aaa; font-size: .8rem;
             border-top: 1px solid #eee; padding-top: .6rem; }}
@@ -389,6 +408,24 @@ with tab_itinerary:
         def meta_of(stop_type: str) -> dict:
             return TYPE_META.get(stop_type, DEFAULT_META)
 
+        def opt_key(day_num, si) -> str:
+            return f"opt_{day_num}_{si}"
+
+        def resolve_stop(stop: dict, day_num, si: int) -> dict:
+            """套用使用者在候選清單中的選擇，回傳實際要顯示的 stop 資料。"""
+            opts = stop.get("options") or []
+            if stop.get("type") in ("餐廳", "景點") and len(opts) >= 2:
+                sel = st.session_state.get(opt_key(day_num, si))
+                chosen = next((o for o in opts if o.get("place") == sel), opts[0])
+                return {
+                    **stop,
+                    "place": chosen.get("place", stop.get("place", "")),
+                    "note": chosen.get("note", stop.get("note", "")),
+                    "lat": chosen.get("lat", stop.get("lat")),
+                    "lon": chosen.get("lon", stop.get("lon")),
+                }
+            return stop
+
         itinerary = data.get("itinerary", [])
         weather = data.get("weather", {})
 
@@ -396,14 +433,16 @@ with tab_itinerary:
             # ── 路線地圖 ──────────────────────────────────────────
             map_points, path_coords = [], []
             for day_data in itinerary:
-                for stop in day_data.get("stops", []):
-                    if "lat" in stop and "lon" in stop:
+                dnum = day_data.get("day", "")
+                for si, raw_stop in enumerate(day_data.get("stops", [])):
+                    stop = resolve_stop(raw_stop, dnum, si)
+                    if stop.get("lat") is not None and stop.get("lon") is not None:
                         m = meta_of(stop.get("type", ""))
                         map_points.append({
                             "lat": stop["lat"],
                             "lon": stop["lon"],
                             "place": stop.get("place", ""),
-                            "label": f"D{day_data.get('day','')} {stop.get('time','')} {stop.get('place','')}",
+                            "label": f"D{dnum} {stop.get('time','')} {stop.get('place','')}",
                             "color": m["rgb"],
                         })
                         path_coords.append([stop["lon"], stop["lat"]])
@@ -456,29 +495,56 @@ with tab_itinerary:
                     unsafe_allow_html=True,
                 )
 
-                items_html = ['<div class="timeline">']
-                for stop in day_data.get("stops", []):
-                    m = meta_of(stop.get("type", ""))
+                for si, raw_stop in enumerate(day_data.get("stops", [])):
+                    stype = raw_stop.get("type", "")
+                    m = meta_of(stype)
+                    opts = raw_stop.get("options") or []
+                    has_choice = stype in ("餐廳", "景點") and len(opts) >= 2
+
+                    stop = resolve_stop(raw_stop, day_num, si)
+
+                    # 移動方式（從上一站到本站）
+                    transfer = raw_stop.get("transfer", "")
+                    if transfer:
+                        st.markdown(
+                            f'<div class="tl-transfer">🚌 {transfer}</div>',
+                            unsafe_allow_html=True,
+                        )
+
                     note = (
                         f'<div class="stop-note">{stop["note"]}</div>'
                         if stop.get("note") else ""
                     )
-                    tag = (
-                        f'<span class="stop-tag" style="background:{m["hex"]}">'
-                        f'{stop.get("type","")}</span>'
-                        if stop.get("type") else ""
+                    parking = raw_stop.get("parking", "")
+                    parking_html = (
+                        f'<div class="stop-parking">🅿 {parking}</div>' if parking else ""
                     )
-                    items_html.append(
-                        f'<div class="tl-item">'
+                    tag = (
+                        f'<span class="stop-tag" style="background:{m["hex"]}">{stype}</span>'
+                        if stype else ""
+                    )
+                    st.markdown(
+                        f'<div class="tl-row">'
                         f'<span class="tl-dot" style="background:{m["hex"]}"></span>'
                         f'<div class="stop-card" style="border-left-color:{m["hex"]}">'
                         f'<span class="stop-time">{stop.get("time","")}</span>'
                         f'　<span class="stop-place">{m["emoji"]} {stop.get("place","")}</span>'
-                        f'{tag}{note}'
-                        f'</div></div>'
+                        f'{tag}{note}{parking_html}'
+                        f'</div></div>',
+                        unsafe_allow_html=True,
                     )
-                items_html.append("</div>")
-                st.markdown("".join(items_html), unsafe_allow_html=True)
+
+                    # 餐廳／景點：提供 2–3 個候選讓使用者自選（即時更新卡片與地圖）
+                    if has_choice:
+                        ratings = {o.get("place", ""): o.get("rating") for o in opts}
+                        st.radio(
+                            f"{stype}候選（可自選）",
+                            options=[o.get("place", "") for o in opts],
+                            format_func=lambda p, r=ratings: f'{p}　★{r.get(p, "-")}',
+                            key=opt_key(day_num, si),
+                            horizontal=True,
+                            label_visibility="collapsed",
+                        )
         else:
             st.warning("未能解析行程，顯示原始輸出：")
             st.json(data)
