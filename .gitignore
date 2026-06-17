@@ -3,5 +3,6 @@ __pycache__/
 *.pyc
 data/chroma_db/
 data/geocode_cache.json
+.streamlit/secrets.toml
 .venv/
 venv/

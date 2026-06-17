@@ -5,6 +5,7 @@ MotoTrip Agent — Streamlit 前端
 import streamlit as st
 import pydeck as pdk
 import httpx
+import hmac
 import json
 from datetime import date, timedelta
 
@@ -15,6 +16,38 @@ st.set_page_config(
     page_icon="🏍",
     layout="wide",
 )
+
+
+# ── 登入閘門 ─────────────────────────────────────────────────────────────
+def check_password() -> bool:
+    """以 st.secrets 的 APP_PASSWORD 做簡單登入驗證。"""
+    # 未設定密碼時直接放行（本機開發）
+    if "APP_PASSWORD" not in st.secrets:
+        return True
+
+    def password_entered():
+        if hmac.compare_digest(
+            st.session_state.get("pw", ""), st.secrets["APP_PASSWORD"]
+        ):
+            st.session_state["authenticated"] = True
+            del st.session_state["pw"]  # 不保留明文密碼
+        else:
+            st.session_state["authenticated"] = False
+
+    if st.session_state.get("authenticated"):
+        return True
+
+    # 登入畫面
+    st.title("MotoTrip Agent")
+    st.caption("山林騎旅全能管家 · 請輸入通行碼")
+    st.text_input("通行碼", type="password", key="pw", on_change=password_entered)
+    if st.session_state.get("authenticated") is False:
+        st.error("通行碼錯誤，請再試一次")
+    return False
+
+
+if not check_password():
+    st.stop()
 
 # ── 全域樣式（白底黑字極簡學術風）──────────────────────────────────────
 st.markdown("""
