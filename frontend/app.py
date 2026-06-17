@@ -417,6 +417,11 @@ with tab_lodging:
                 st.error(f"找不到此民宿評論：{e.response.text}")
                 st.stop()
 
+        # 模糊比對提示：輸入簡稱對應到全名時告知
+        matched_name = r.get("matched_name", "")
+        if matched_name and matched_name != analyze_name.strip():
+            st.info(f"🔍 已對應到：**{matched_name}**（{r.get('review_count', '?')} 則評論）")
+
         def score_html(score: int) -> str:
             cls = "score-high" if score >= 75 else "score-mid" if score >= 50 else "score-low"
             return f'<span class="{cls}">{score}</span>'
