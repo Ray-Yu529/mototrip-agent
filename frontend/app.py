@@ -228,6 +228,77 @@ with st.sidebar:
 
     generate_btn = st.button("生成行程", use_container_width=True)
 
+REPORT_EMOJI = {"餐廳": "🍜", "景點": "📍", "住宿": "🏠", "加油站": "⛽", "補給": "🏪"}
+
+
+def build_report_html(data: dict) -> str:
+    """把行程資料組成可列印的獨立 HTML 報告（瀏覽器 Ctrl+P 可存成 PDF）。"""
+    weather = data.get("weather", {})
+    theme = data.get("theme", "行程")
+    transport = data.get("transport", "")
+    total_days = data.get("total_days", 1)
+
+    w_line = ""
+    if weather and not weather.get("error"):
+        w_line = (
+            f'<p class="meta">天氣：{weather.get("temp_range","")}　'
+            f'降雨機率 {weather.get("rain_risk_pct","?")}%　'
+            f'最佳時段 {weather.get("best_riding_window","")}</p>'
+            f'<p class="meta">穿搭：{weather.get("clothing_tip","")}</p>'
+        )
+
+    days_html = []
+    for day in data.get("itinerary", []):
+        rows = []
+        for s in day.get("stops", []):
+            emoji = REPORT_EMOJI.get(s.get("type", ""), "▸")
+            note = f'<div class="note">{s.get("note","")}</div>' if s.get("note") else ""
+            rows.append(
+                f'<tr><td class="time">{s.get("time","")}</td>'
+                f'<td><b>{emoji} {s.get("place","")}</b>'
+                f'<span class="tag">{s.get("type","")}</span>{note}</td></tr>'
+            )
+        days_html.append(
+            f'<h2>Day {day.get("day","")} <span class="date">{day.get("date","")}</span></h2>'
+            f'<table>{"".join(rows)}</table>'
+        )
+
+    tips = data.get("survival_tips", [])
+    tips_html = ""
+    if tips:
+        lis = "".join(f"<li>{t}</li>" for t in tips)
+        tips_html = f"<h2>生存守則</h2><ul>{lis}</ul>"
+
+    return f"""<!DOCTYPE html>
+<html lang="zh-Hant"><head><meta charset="utf-8">
+<title>{theme} 行程報告</title>
+<style>
+  body {{ font-family: "Microsoft JhengHei","Noto Sans TC",sans-serif;
+         max-width: 760px; margin: 2rem auto; color: #1a1a1a; padding: 0 1rem; }}
+  h1 {{ border-bottom: 3px solid #111; padding-bottom: .4rem; }}
+  h2 {{ margin-top: 1.6rem; border-left: 5px solid #111; padding-left: .6rem; }}
+  .date {{ color: #888; font-size: .9rem; font-weight: normal; }}
+  .meta {{ color: #555; margin: .2rem 0; }}
+  table {{ width: 100%; border-collapse: collapse; margin-top: .5rem; }}
+  td {{ border-bottom: 1px solid #eee; padding: .5rem .4rem; vertical-align: top; }}
+  .time {{ width: 60px; font-weight: 700; color: #c0392b; white-space: nowrap; }}
+  .tag {{ background: #f0f0f0; border-radius: 10px; font-size: .72rem;
+          padding: .05rem .5rem; margin-left: .5rem; color: #555; }}
+  .note {{ color: #777; font-size: .85rem; margin-top: .2rem; }}
+  ul {{ line-height: 1.8; }}
+  footer {{ margin-top: 2rem; color: #aaa; font-size: .8rem;
+            border-top: 1px solid #eee; padding-top: .6rem; }}
+  @media print {{ body {{ margin: 0; }} }}
+</style></head><body>
+<h1>{theme}</h1>
+<p class="meta">交通方式：{transport}　|　共 {total_days} 天</p>
+{w_line}
+{"".join(days_html)}
+{tips_html}
+<footer>由 MotoTrip Agent 山林騎旅全能管家生成 · 提示：用瀏覽器列印 (Ctrl+P) 可存成 PDF</footer>
+</body></html>"""
+
+
 # ── 主內容區：分頁 ───────────────────────────────────────────────────────
 tab_itinerary, tab_weather, tab_lodging = st.tabs(
     ["行程規劃", "天氣 & 騎乘建議", "住宿防雷分析"]
@@ -268,7 +339,8 @@ with tab_itinerary:
                     timeout=180,
                 )
                 resp.raise_for_status()
-                data = resp.json()
+                # 存進 session_state，下載按鈕觸發重跑時資料才不會消失
+                st.session_state["itin_data"] = resp.json()
             except httpx.ConnectError:
                 st.error("無法連接 FastAPI（請確認 uvicorn 已啟動）")
                 st.stop()
@@ -276,6 +348,9 @@ with tab_itinerary:
                 st.error(f"API 錯誤：{e.response.text}")
                 st.stop()
 
+    # ── 從 session_state 渲染（生成後與下載重跑都會走這裡）──────────────
+    data = st.session_state.get("itin_data")
+    if data:
         total_days = data.get("total_days", 1)
         st.subheader(
             f"{data.get('theme', '行程')} · {data.get('transport', '')} · {total_days} 天"
@@ -393,6 +468,30 @@ with tab_itinerary:
             st.subheader("機車生存守則")
             for tip in tips:
                 st.markdown(f'<div class="tip-box">▸ {tip}</div>', unsafe_allow_html=True)
+
+        # ── 下載報告 ──────────────────────────────────────────
+        if data.get("itinerary"):
+            st.divider()
+            report_html = build_report_html(data)
+            theme_name = data.get("theme", "行程")
+            col_dl1, col_dl2 = st.columns(2)
+            with col_dl1:
+                st.download_button(
+                    "📄 下載行程報告 (HTML)",
+                    data=report_html,
+                    file_name=f"MotoTrip_{theme_name}.html",
+                    mime="text/html",
+                    use_container_width=True,
+                    help="下載後用瀏覽器開啟，Ctrl+P 可另存為 PDF",
+                )
+            with col_dl2:
+                st.download_button(
+                    "🗂 下載原始資料 (JSON)",
+                    data=json.dumps(data, ensure_ascii=False, indent=2),
+                    file_name=f"MotoTrip_{theme_name}.json",
+                    mime="application/json",
+                    use_container_width=True,
+                )
     else:
         st.info("在左側填入行程參數後，點擊「生成行程」")
 
