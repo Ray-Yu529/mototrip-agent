@@ -27,7 +27,38 @@ LLM 後端可一鍵切換：**NVIDIA NIM 雲端**（開發期推薦）或 **Olla
 
 ---
 
-## 快速啟動
+## 快速啟動（Docker Compose，推薦）
+
+```bash
+cd mototrip-agent
+cp .env.example .env        # 填入 NVIDIA_API_KEY / CWA_API_KEY 等
+docker compose up -d --build
+```
+
+- 前端：http://localhost:8501
+- 後端 API：http://localhost:8000
+- 向量資料庫與 geocode 快取持久化在 `./data`（掛載 volume）
+
+匯入範例評論（RAG 防雷功能需要，容器內執行）：
+
+```bash
+docker compose exec backend python -m scripts.ingest_sample_reviews
+```
+
+關閉：`docker compose down`
+
+### 選用：本機 Ollama 後端
+
+```bash
+# .env 改成 LLM_BACKEND=ollama，然後啟用 ollama profile
+docker compose --profile ollama up -d --build
+docker compose exec ollama ollama pull gemma3:1b
+docker compose exec ollama ollama pull nomic-embed-text
+```
+
+---
+
+## 本機開發啟動（不使用 Docker）
 
 ### 1. 安裝依賴
 

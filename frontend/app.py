@@ -7,9 +7,11 @@ import pydeck as pdk
 import httpx
 import hmac
 import json
+import os
 from datetime import date, timedelta
 
-API_BASE = "http://localhost:8000"
+# 容器內透過 service 名稱連線後端；本機開發預設 localhost
+API_BASE = os.getenv("API_BASE", "http://localhost:8000")
 
 st.set_page_config(
     page_title="MotoTrip Agent 山林騎旅管家",

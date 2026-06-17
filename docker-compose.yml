@@ -1,0 +1,54 @@
+services:
+  backend:
+    build: .
+    image: mototrip-agent
+    command: uvicorn backend.main:app --host 0.0.0.0 --port 8000
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    environment:
+      # 容器內以 service 名稱連 ollama（僅 LLM_BACKEND=ollama 時生效；覆蓋 .env 的 localhost）
+      OLLAMA_BASE_URL: http://ollama:11434
+    volumes:
+      # 持久化向量資料庫與 geocode 快取（評論匯入結果保留）
+      - ./data:/app/data
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0) if urllib.request.urlopen('http://localhost:8000/health').status==200 else sys.exit(1)"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    restart: unless-stopped
+
+  frontend:
+    build: .
+    image: mototrip-agent
+    command: streamlit run frontend/app.py --server.port 8501 --server.address 0.0.0.0
+    ports:
+      - "8501:8501"
+    environment:
+      # Streamlit 後端 server 端呼叫，透過 compose 網路找到 backend
+      API_BASE: http://backend:8000
+    volumes:
+      # 掛載登入通行碼設定（secrets.toml 不進 image）
+      - ./.streamlit:/app/.streamlit
+    depends_on:
+      backend:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # ── 選用：本機 Ollama LLM 後端 ──────────────────────────────────────────
+  # 啟用：docker compose --profile ollama up
+  # 並把 .env 改為 LLM_BACKEND=ollama
+  ollama:
+    image: ollama/ollama:latest
+    profiles: ["ollama"]
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_models:/root/.ollama
+    restart: unless-stopped
+
+volumes:
+  ollama_models:

@@ -6,6 +6,7 @@ uvicorn[standard]==0.32.1
 langchain==0.3.7
 langchain-community==0.3.7
 langchain-ollama==0.2.1
+langchain-nvidia-ai-endpoints==0.3.19
 
 # Vector DB
 chromadb==0.5.23

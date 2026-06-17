@@ -1,0 +1,14 @@
+.git
+.gitignore
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+.env
+data/chroma_db/
+data/geocode_cache.json
+.streamlit/secrets.toml
+README.md
+share.bat
+*.md
