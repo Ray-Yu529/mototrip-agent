@@ -188,12 +188,43 @@ with st.sidebar:
         help="需先執行 scripts/ingest_sample_reviews.py",
     )
 
-    st.subheader("景點清單（選填）")
-    poi_raw = st.text_area(
-        "JSON 格式，留空使用示範資料",
-        height=100,
-        placeholder='[{"name":"清境農場","type":"景點","rating":4.5}]',
+    st.subheader("篩選偏好")
+    cuisines = st.multiselect(
+        "餐廳類型",
+        options=["小吃麵食", "火鍋", "咖啡廳", "特色料理", "素食", "夜市"],
+        default=["特色料理"],
     )
+    attraction_types = st.multiselect(
+        "景點類型",
+        options=["自然風景", "文化古蹟", "打卡熱點", "溫泉"],
+        default=["自然風景"],
+    )
+    venue_pref_label = st.radio(
+        "室內 / 室外",
+        options=["依天氣自動", "偏好室內", "偏好室外"],
+        horizontal=True,
+        help="「依天氣自動」：午後降雨機率高時自動改室內",
+    )
+    venue_pref = {"依天氣自動": "auto", "偏好室內": "indoor",
+                  "偏好室外": "outdoor"}[venue_pref_label]
+
+    min_rating = st.slider("最低評分", 0.0, 5.0, 4.0, step=0.1)
+
+    budget_label = st.select_slider(
+        "用餐預算",
+        options=["不限", "$", "$$", "$$$", "$$$$"],
+        value="不限",
+    )
+    budget_map = {"不限": (None, None), "$": (0, 1), "$$": (1, 2),
+                  "$$$": (2, 3), "$$$$": (3, 4)}
+    min_price, max_price = budget_map[budget_label]
+
+    with st.expander("進階：手動加景點 (JSON)"):
+        poi_raw = st.text_area(
+            "會與自動查詢合併",
+            height=80,
+            placeholder='[{"name":"清境農場","type":"景點","rating":4.5}]',
+        )
 
     generate_btn = st.button("生成行程", use_container_width=True)
 
@@ -206,16 +237,12 @@ tab_itinerary, tab_weather, tab_lodging = st.tabs(
 with tab_itinerary:
     if generate_btn:
         try:
-            poi_list = json.loads(poi_raw) if poi_raw.strip() else [
-                {"name": "清境農場", "type": "景點", "rating": 4.5},
-                {"name": "彩虹瀑布", "type": "景點", "rating": 4.2},
-                {"name": "廬山溫泉老街小吃", "type": "餐廳", "rating": 4.3},
-            ]
+            poi_list = json.loads(poi_raw) if poi_raw.strip() else []
         except json.JSONDecodeError:
-            st.error("景點 JSON 格式錯誤，請確認格式")
+            st.error("手動景點 JSON 格式錯誤，請確認格式")
             st.stop()
 
-        with st.spinner("Routing Agent 規劃中，約需 30–90 秒..."):
+        with st.spinner("查詢景點 + 行程規劃中，約需 30–90 秒..."):
             try:
                 resp = httpx.post(
                     f"{API_BASE}/itinerary/generate",
@@ -228,6 +255,14 @@ with tab_itinerary:
                         "transport": transport,
                         "altitude_m": altitude_m,
                         "lodging_name": lodging_name,
+                        "preferences": {
+                            "cuisines": cuisines,
+                            "attraction_types": attraction_types,
+                            "min_rating": min_rating,
+                            "min_price": min_price,
+                            "max_price": max_price,
+                            "venue_pref": venue_pref,
+                        },
                         "poi_list": poi_list,
                     },
                     timeout=180,

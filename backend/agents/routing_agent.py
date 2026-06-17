@@ -14,10 +14,12 @@ ITINERARY_PROMPT = ChatPromptTemplate.from_messages([
         "你是一位專業的旅遊規劃師。請根據以下資訊，規劃一份完整的多日旅遊行程。\n\n"
         "規則（必須遵守）：\n"
         "1. 所有景點活動安排在 07:00–21:00 之間\n"
-        "2. 午後（12:00–15:00）降雨風險高時，安排室內活動或休息\n"
+        "2. 午後（12:00–15:00）降雨風險高時，優先安排 venue=indoor 的室內地點\n"
         "3. 依照交通方式調整每段移動時間與景點密度\n"
         "4. 多日行程每天都要有住宿安排（最後一天除外）\n"
-        "5. 輸出**純 JSON**，不要加 markdown 或說明文字\n\n"
+        "5. **餐廳與景點請優先從「推薦景點／餐廳」清單中挑選**，不要自行虛構不存在的店家\n"
+        "6. 遵守使用者偏好（見下方偏好設定）\n"
+        "7. 輸出**純 JSON**，不要加 markdown 或說明文字\n\n"
         "輸出格式：\n"
         '{{"theme": "主題", "transport": "交通方式", "total_days": 天數, '
         '"itinerary": ['
@@ -30,9 +32,10 @@ ITINERARY_PROMPT = ChatPromptTemplate.from_messages([
         "旅遊主題：{theme}\n"
         "交通方式：{transport}（{transport_note}）\n"
         "出發地：{origin} → 目的地：{destination}\n"
-        "出發日期：{start_date}，共 {days} 天\n\n"
+        "出發日期：{start_date}，共 {days} 天\n"
+        "偏好設定：{preferences_note}\n\n"
         "天氣資訊（目的地）：\n{weather_info}\n\n"
-        "推薦景點／餐廳：\n{poi_list}\n\n"
+        "推薦景點／餐廳（含 venue 室內外標記）：\n{poi_list}\n\n"
         "住宿防雷分析：\n{lodging_info}"
     )),
 ])
@@ -49,6 +52,7 @@ async def generate_itinerary(
     weather_info: dict,
     poi_list: list[dict],
     lodging_info: dict,
+    preferences_note: str = "無特別偏好",
 ) -> dict:
     chain = ITINERARY_PROMPT | get_llm() | StrOutputParser()
 
@@ -60,6 +64,7 @@ async def generate_itinerary(
         "destination": destination,
         "start_date": start_date,
         "days": days,
+        "preferences_note": preferences_note,
         "weather_info": json.dumps(weather_info, ensure_ascii=False, indent=2),
         "poi_list": json.dumps(poi_list, ensure_ascii=False, indent=2),
         "lodging_info": json.dumps(lodging_info, ensure_ascii=False, indent=2),
