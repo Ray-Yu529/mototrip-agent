@@ -22,9 +22,14 @@ TOWNSHIP_DATASET_MAP: dict[str, str] = {
     "南投縣": "F-D0047-023",
     "嘉義縣": "F-D0047-031",
     "屏東縣": "F-D0047-035",
+    "臺東縣": "F-D0047-039",  # 掃描確認
     "花蓮縣": "F-D0047-043",
-    "台東縣": "F-D0047-047",  # 依規律推算，未掃描確認
-    "台中市": "F-D0047-075",  # 直轄市 ID 較高，依規律推算
+    "臺中市": "F-D0047-075",  # 掃描確認
+}
+
+# 台/臺 異體字 + 簡稱互通
+COUNTY_ALIASES: dict[str, str] = {
+    "台東縣": "臺東縣", "台中市": "臺中市",
 }
 
 # 鄉鎮 → 所屬縣市（用來查正確的 dataset）
@@ -49,11 +54,26 @@ def altitude_temp_adjust(base_temp_c: float, altitude_m: float) -> float:
     return base_temp_c - (altitude_m / 100) * LAPSE_RATE
 
 
+def _normalize_county(name: str) -> str:
+    """把城市簡稱/異體字補成對照表的正式縣市名，例『宜蘭』→『宜蘭縣』、『台東』→『臺東縣』。"""
+    if name in TOWNSHIP_DATASET_MAP:
+        return name
+    for suffix in ("", "縣", "市"):
+        cand = name + suffix
+        cand = COUNTY_ALIASES.get(cand, cand)   # 台→臺
+        if cand in TOWNSHIP_DATASET_MAP:
+            return cand
+    return name
+
+
 def _resolve_endpoint(location: str) -> tuple[str, str]:
     """
     判斷要呼叫哪個端點。
     回傳 (dataset_url, location_name_for_filter)
     """
+    # 城市簡稱正規化（宜蘭 → 宜蘭縣）
+    location = _normalize_county(location)
+
     # 直接是縣市名稱 → 用該縣市的鄉鎮端點，回傳第一個鄉鎮作代表
     if location in TOWNSHIP_DATASET_MAP:
         return f"{CWA_BASE}/{TOWNSHIP_DATASET_MAP[location]}", location

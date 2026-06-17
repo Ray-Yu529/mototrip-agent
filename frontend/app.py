@@ -156,25 +156,42 @@ st.divider()
 with st.sidebar:
     st.header("行程設定")
 
-    theme = st.selectbox(
+    theme_choice = st.selectbox(
         "旅遊主題",
-        options=["michelin", "couple", "hardcore", "photo"],
+        options=["michelin", "couple", "hardcore", "photo", "custom"],
         format_func=lambda x: {
             "michelin": "🍜 米其林必比登吃貨之旅",
             "couple":   "💑 雙人浪漫微旅行",
             "hardcore": "🏔 硬派跑山刷彎",
             "photo":    "📷 秘境攝影打卡",
+            "custom":   "✏️ 自訂主題…",
         }[x],
     )
+    if theme_choice == "custom":
+        theme = st.text_input(
+            "輸入自訂主題",
+            value="鐵道七日環台之旅",
+            help="例如：鐵道環島、老屋咖啡巡禮、離島跳島",
+        ).strip() or "自由行"
+    else:
+        theme = theme_choice
 
     origin = st.text_input("出發地點", value="台中市")
     destination = st.text_input("目的地", value="仁愛鄉")
+    waypoints_raw = st.text_input(
+        "途經城市（多目的地，選填）",
+        value="",
+        placeholder="台北,宜蘭,花蓮,台東（用逗號分隔）",
+        help="填了就走多城市/環島模式，天數自動分配到各城市；留空則只規劃單一目的地",
+    )
+    waypoints = [c.strip() for c in waypoints_raw.replace("，", ",").split(",") if c.strip()]
+
     altitude_m = st.slider("目的地海拔（公尺）", 0, 3400, 1000, step=100)
     trip_date = st.date_input("出發日期", value=date.today() + timedelta(days=1))
 
     col_days, col_transport = st.columns(2)
     with col_days:
-        days = st.number_input("旅遊天數", min_value=1, max_value=7, value=1, step=1)
+        days = st.number_input("旅遊天數", min_value=1, max_value=10, value=1, step=1)
     with col_transport:
         transport = st.selectbox(
             "交通方式",
@@ -321,6 +338,7 @@ with tab_itinerary:
                         "theme": theme,
                         "origin": origin,
                         "destination": destination,
+                        "waypoints": waypoints,
                         "start_date": str(trip_date),
                         "days": int(days),
                         "transport": transport,
