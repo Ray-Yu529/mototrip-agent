@@ -149,6 +149,11 @@ st.markdown("""
         padding: 0.05rem 0.5rem; border-radius: 10px; margin-left: 0.4rem;
         vertical-align: middle;
     }
+    .gas-warning {
+        background: #fff3e0; border-left: 3px solid #e65100; color: #7a3d00;
+        padding: 0.5rem 0.8rem; margin: 0.4rem 0; font-size: 0.85rem; border-radius: 4px;
+    }
+    .route-meta { color: #777; font-size: 0.82rem; margin: -0.4rem 0 0.6rem 0; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -293,8 +298,18 @@ def build_report_html(data: dict) -> str:
                 f'<span class="tag">{s.get("type","")}</span>'
                 f'{note}{parking}{alts_html}</td></tr>'
             )
+        route = day.get("route") or {}
+        route_line = (
+            f'<p class="meta">🛣 實際路線約 {route["distance_km"]} 公里'
+            f'　⏱ 騎乘約 {route.get("duration_min","?")} 分鐘（不含停留）</p>'
+            if route.get("distance_km") is not None else ""
+        )
+        gas_html = "".join(
+            f'<p class="meta gas">⛽ {w}</p>' for w in day.get("gas_warnings", [])
+        )
         days_html.append(
             f'<h2>Day {day.get("day","")} <span class="date">{day.get("date","")}</span></h2>'
+            f'{route_line}{gas_html}'
             f'<table>{"".join(rows)}</table>'
         )
 
@@ -303,6 +318,18 @@ def build_report_html(data: dict) -> str:
     if tips:
         lis = "".join(f"<li>{t}</li>" for t in tips)
         tips_html = f"<h2>生存守則</h2><ul>{lis}</ul>"
+
+    budget = data.get("budget")
+    budget_html = ""
+    if budget:
+        budget_html = (
+            "<h2>預算估算</h2>"
+            f'<p class="meta">總里程 {budget.get("total_distance_km",0)} km　'
+            f'油錢 NT$ {budget.get("total_fuel_cost_twd",0)}　'
+            f'餐飲 NT$ {budget.get("total_meal_cost_twd",0)}　'
+            f'合計 NT$ {budget.get("estimated_total_twd",0)}</p>'
+            f'<p class="meta">{budget.get("note","")}</p>'
+        )
 
     return f"""<!DOCTYPE html>
 <html lang="zh-Hant"><head><meta charset="utf-8">
@@ -323,6 +350,7 @@ def build_report_html(data: dict) -> str:
   .transfer {{ color: #5a6b7b; font-size: .82rem; margin-bottom: .25rem; }}
   .parking {{ color: #8a6d00; font-size: .82rem; margin-top: .2rem; }}
   .alts {{ color: #999; font-size: .8rem; margin-top: .2rem; }}
+  .gas {{ color: #e65100; }}
   ul {{ line-height: 1.8; }}
   footer {{ margin-top: 2rem; color: #aaa; font-size: .8rem;
             border-top: 1px solid #eee; padding-top: .6rem; }}
@@ -333,6 +361,7 @@ def build_report_html(data: dict) -> str:
 {w_line}
 {"".join(days_html)}
 {tips_html}
+{budget_html}
 <footer>由 MotoTrip Agent 山林騎旅全能管家生成 · 提示：用瀏覽器列印 (Ctrl+P) 可存成 PDF</footer>
 </body></html>"""
 
@@ -431,9 +460,10 @@ with tab_itinerary:
 
         if itinerary:
             # ── 路線地圖 ──────────────────────────────────────────
-            map_points, path_coords = [], []
+            map_points, path_rows, gas_points = [], [], []
             for day_data in itinerary:
                 dnum = day_data.get("day", "")
+                day_path_coords = []
                 for si, raw_stop in enumerate(day_data.get("stops", [])):
                     stop = resolve_stop(raw_stop, dnum, si)
                     if stop.get("lat") is not None and stop.get("lon") is not None:
@@ -445,7 +475,18 @@ with tab_itinerary:
                             "label": f"D{dnum} {stop.get('time','')} {stop.get('place','')}",
                             "color": m["rgb"],
                         })
-                        path_coords.append([stop["lon"], stop["lat"]])
+                        day_path_coords.append([stop["lon"], stop["lat"]])
+
+                # 有 OSRM 真實路線幾何就用它畫路（貼合實際道路），沒有才退回站點直線
+                real_geometry = day_data.get("route", {}).get("geometry")
+                path_rows.append({"path": real_geometry or day_path_coords})
+
+                for g in day_data.get("gas_stations", []):
+                    if g.get("lat") is not None and g.get("lon") is not None:
+                        gas_points.append({
+                            "lat": g["lat"], "lon": g["lon"],
+                            "label": f"⛽ {g.get('name','加油站')}（約第 {g.get('approx_km_mark','?')} 公里）",
+                        })
 
             if map_points:
                 avg_lat = sum(p["lat"] for p in map_points) / len(map_points)
@@ -462,31 +503,49 @@ with tab_itinerary:
                 )
                 path = pdk.Layer(
                     "PathLayer",
-                    data=[{"path": path_coords}],
+                    data=path_rows,
                     get_path="path",
                     get_color=[17, 17, 17],
                     width_min_pixels=3,
                 )
+                layers = [path, scatter]
+                if gas_points:
+                    gas_layer = pdk.Layer(
+                        "ScatterplotLayer",
+                        data=gas_points,
+                        get_position="[lon, lat]",
+                        get_fill_color=[106, 27, 154],
+                        get_radius=250,
+                        pickable=True,
+                        opacity=0.7,
+                    )
+                    layers.append(gas_layer)
                 st.pydeck_chart(pdk.Deck(
                     map_style="road",
                     initial_view_state=pdk.ViewState(
                         latitude=avg_lat, longitude=avg_lon, zoom=9, pitch=0,
                     ),
-                    layers=[path, scatter],
+                    layers=layers,
                     tooltip={"text": "{label}"},
                 ))
+                if gas_points:
+                    st.caption("🟣 紫點為沿線查到的真實加油站（Google Places）")
             else:
                 st.info("地圖座標解析中或無資料，以下為文字行程。")
 
             # ── 卡片時間軸（按 Day 分組）──────────────────────────
+            weather_by_city = data.get("weather_by_city", {})
             for day_data in itinerary:
                 day_num = day_data.get("day", "")
                 day_date = day_data.get("date", "")
+                day_city = day_data.get("city", "")
+                # 優先用「當天城市 + 當天日期」對應的天氣，對不到才退回相容欄位 weather
+                day_weather = weather_by_city.get(day_city, {}).get(day_date) or weather
                 w_chip = ""
-                if weather and not weather.get("error"):
+                if day_weather and not day_weather.get("error"):
                     w_chip = (
-                        f'<span class="weather-chip">🌡 {weather.get("temp_range","")}'
-                        f'　☔ {weather.get("rain_risk_pct","?")}%</span>'
+                        f'<span class="weather-chip">🌡 {day_weather.get("temp_range","")}'
+                        f'　☔ {day_weather.get("rain_risk_pct","?")}%</span>'
                     )
                 st.markdown(
                     f'<div class="day-header">'
@@ -494,6 +553,16 @@ with tab_itinerary:
                     f'<span class="day-date">{day_date}</span>{w_chip}</div>',
                     unsafe_allow_html=True,
                 )
+
+                route = day_data.get("route") or {}
+                if route.get("distance_km") is not None:
+                    st.markdown(
+                        f'<div class="route-meta">🛣 實際路線約 {route["distance_km"]} 公里'
+                        f'　⏱ 騎乘約 {route.get("duration_min","?")} 分鐘（不含停留）</div>',
+                        unsafe_allow_html=True,
+                    )
+                for w in day_data.get("gas_warnings", []):
+                    st.markdown(f'<div class="gas-warning">⛽ {w}</div>', unsafe_allow_html=True)
 
                 for si, raw_stop in enumerate(day_data.get("stops", [])):
                     stype = raw_stop.get("type", "")
@@ -555,15 +624,58 @@ with tab_itinerary:
             for tip in tips:
                 st.markdown(f'<div class="tip-box">▸ {tip}</div>', unsafe_allow_html=True)
 
+        # ── 預算估算 ──────────────────────────────────────────
+        budget = data.get("budget")
+        if budget:
+            st.subheader("預算估算（粗估）")
+            b1, b2, b3, b4 = st.columns(4)
+            b1.metric("總里程", f"{budget.get('total_distance_km', 0)} km")
+            b2.metric("油錢", f"NT$ {budget.get('total_fuel_cost_twd', 0)}")
+            b3.metric("餐飲", f"NT$ {budget.get('total_meal_cost_twd', 0)}")
+            b4.metric("合計", f"NT$ {budget.get('estimated_total_twd', 0)}")
+            st.caption(budget.get("note", ""))
+            with st.expander("每日明細"):
+                for d in budget.get("per_day", []):
+                    st.markdown(
+                        f"Day {d.get('day')}：{d.get('distance_km')} km　"
+                        f"油錢 NT$ {d.get('fuel_cost_twd')}　"
+                        f"餐飲 {d.get('meal_stops')} 餐 NT$ {d.get('meal_cost_twd')}"
+                    )
+
+        # ── 對話式行程微調 ──────────────────────────────────────
+        if data.get("itinerary"):
+            st.divider()
+            st.subheader("行程微調")
+            adjust_instruction = st.text_input(
+                "用一句話描述想怎麼改",
+                placeholder="例如：Day 2 不要去清境農場，換成鄰近的景點",
+                key="adjust_instruction",
+            )
+            if st.button("套用調整", key="adjust_btn") and adjust_instruction.strip():
+                with st.spinner("調整行程中，約需 20–40 秒..."):
+                    try:
+                        resp = httpx.post(
+                            f"{API_BASE}/itinerary/adjust",
+                            json={"itinerary": data, "instruction": adjust_instruction.strip()},
+                            timeout=120,
+                        )
+                        resp.raise_for_status()
+                        st.session_state["itin_data"] = resp.json()
+                        st.rerun()
+                    except httpx.ConnectError:
+                        st.error("無法連接 FastAPI")
+                    except httpx.HTTPStatusError as e:
+                        st.error(f"調整失敗：{e.response.text}")
+
         # ── 下載報告 ──────────────────────────────────────────
         if data.get("itinerary"):
             st.divider()
             report_html = build_report_html(data)
             theme_name = data.get("theme", "行程")
-            col_dl1, col_dl2 = st.columns(2)
+            col_dl1, col_dl2, col_dl3, col_dl4 = st.columns(4)
             with col_dl1:
                 st.download_button(
-                    "📄 下載行程報告 (HTML)",
+                    "📄 行程報告 (HTML)",
                     data=report_html,
                     file_name=f"MotoTrip_{theme_name}.html",
                     mime="text/html",
@@ -572,12 +684,42 @@ with tab_itinerary:
                 )
             with col_dl2:
                 st.download_button(
-                    "🗂 下載原始資料 (JSON)",
+                    "🗂 原始資料 (JSON)",
                     data=json.dumps(data, ensure_ascii=False, indent=2),
                     file_name=f"MotoTrip_{theme_name}.json",
                     mime="application/json",
                     use_container_width=True,
                 )
+            with col_dl3:
+                if st.button("🧭 產生 GPX", key="gpx_btn", use_container_width=True):
+                    try:
+                        resp = httpx.post(f"{API_BASE}/itinerary/export/gpx",
+                                           json={"itinerary": data}, timeout=30)
+                        resp.raise_for_status()
+                        st.session_state["gpx_data"] = resp.text
+                    except Exception as e:
+                        st.error(f"GPX 產生失敗：{e}")
+                if "gpx_data" in st.session_state:
+                    st.download_button(
+                        "下載 GPX", data=st.session_state["gpx_data"],
+                        file_name=f"MotoTrip_{theme_name}.gpx", mime="application/gpx+xml",
+                        use_container_width=True, key="gpx_dl",
+                    )
+            with col_dl4:
+                if st.button("📅 產生 ICS", key="ics_btn", use_container_width=True):
+                    try:
+                        resp = httpx.post(f"{API_BASE}/itinerary/export/ics",
+                                           json={"itinerary": data}, timeout=30)
+                        resp.raise_for_status()
+                        st.session_state["ics_data"] = resp.text
+                    except Exception as e:
+                        st.error(f"ICS 產生失敗：{e}")
+                if "ics_data" in st.session_state:
+                    st.download_button(
+                        "下載 ICS", data=st.session_state["ics_data"],
+                        file_name=f"MotoTrip_{theme_name}.ics", mime="text/calendar",
+                        use_container_width=True, key="ics_dl",
+                    )
     else:
         st.info("在左側填入行程參數後，點擊「生成行程」")
 

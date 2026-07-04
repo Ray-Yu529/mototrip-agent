@@ -41,9 +41,12 @@ def get_llm() -> BaseChatModel:
 def get_embeddings() -> Embeddings:
     if settings.llm_backend == "nvidia":
         from langchain_nvidia_ai_endpoints import NVIDIAEmbeddings
+        # baai/bge-m3 目前在 NVIDIA NIM 上會回傳 500（服務端問題，模型本身仍列在目錄中），
+        # 實測 nvidia/nv-embedqa-e5-v5 正常，故換用；換模型會改變向量空間，
+        # 既有已匯入的評論需要重跑 ingest script 才能用新模型重新產生向量。
         return NVIDIAEmbeddings(
             api_key=settings.nvidia_api_key,
-            model="baai/bge-m3",
+            model="nvidia/nv-embedqa-e5-v5",
         )
     from langchain_ollama import OllamaEmbeddings
     return OllamaEmbeddings(

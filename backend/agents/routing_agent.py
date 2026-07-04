@@ -1,5 +1,10 @@
 """
 Routing Agent — 唯一的 LLM 呼叫，整合所有資料輸出多日行程 JSON。
+
+備註：曾嘗試改用 LangChain with_structured_output() 取代下方的 JSON 修補邏輯，
+但實測目前預設的 NVIDIA 模型（google/diffusiongemma-26b-a4b-it）不支援工具呼叫，
+with_structured_output 會靜默回傳 None（無例外、無法 fallback），故保留手動解析
+＋截斷修補的做法，這是目前唯一能穩定拿到結果的方式。
 """
 import json
 import re
@@ -16,7 +21,9 @@ ITINERARY_PROMPT = ChatPromptTemplate.from_messages([
         "1. 所有景點活動安排在 07:00–21:00 之間\n"
         "1b. **三餐不可遺漏**：每個完整旅遊日都要排午餐（約 12:00–13:00）與晚餐"
         "（約 18:00–19:00，type=餐廳），晚餐必須安排在入住住宿之前；多日行程隔天可視情況加早餐\n"
-        "2. 午後（12:00–15:00）降雨風險高時，優先安排 venue=indoor 的室內地點\n"
+        "2. **各城市天氣是依「日期」分別提供的（key 為 YYYY-MM-DD）**，"
+        "請依每個 stop 實際所在日期讀取對應天氣，"
+        "該日午後（12:00–15:00）降雨風險高（rain_risk_pct 高）時，優先安排 venue=indoor 的室內地點\n"
         "3. 依照交通方式調整每段移動時間與景點密度\n"
         "4. 多日行程每天都要有住宿安排（最後一天除外）\n"
         "5. **餐廳與景點請優先從「推薦景點／餐廳」清單中挑選**，不要自行虛構不存在的店家\n"
@@ -89,6 +96,34 @@ async def generate_itinerary(
         "lodging_info": json.dumps(lodging_info, ensure_ascii=False, indent=2),
     })
 
+    return _parse_json_safe(raw)
+
+
+ADJUST_PROMPT = ChatPromptTemplate.from_messages([
+    ("system", (
+        "你是一位專業的旅遊規劃師。使用者已經有一份完整的多日行程（JSON），"
+        "現在要根據他的修改指令調整行程。\n\n"
+        "規則：\n"
+        "1. 盡量只修改使用者要求的部分，其餘天數/stops 維持原樣不要無故更動\n"
+        "2. 修改後仍要遵守：三餐不遺漏、時間在 07:00–21:00、"
+        "每天都有住宿安排（最後一天除外）、stop 需含 city/type/transfer/parking/options 等既有欄位\n"
+        "3. 若使用者要求移除某個景點/餐廳，需視情況補上鄰近的替代選項或調整時間銜接\n"
+        "4. 輸出**純 JSON**，格式與輸入的原始行程 JSON 完全相同（同樣的 key 結構），不要加 markdown\n"
+    )),
+    ("human", (
+        "原始行程 JSON：\n{itinerary_json}\n\n"
+        "修改指令：{instruction}"
+    )),
+])
+
+
+async def adjust_itinerary(itinerary: dict, instruction: str) -> dict:
+    """對話式行程微調：既有行程 + 一句話指令 → 修改後的行程 JSON（額外 1 次 LLM 呼叫）。"""
+    chain = ADJUST_PROMPT | get_llm() | StrOutputParser()
+    raw = await chain.ainvoke({
+        "itinerary_json": json.dumps(itinerary, ensure_ascii=False, indent=2),
+        "instruction": instruction,
+    })
     return _parse_json_safe(raw)
 
 

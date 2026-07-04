@@ -5,6 +5,7 @@ then calls LLM once to score cleanliness + moto-friendliness.
 import json
 import re
 import difflib
+import asyncio
 from loguru import logger
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser
@@ -13,6 +14,7 @@ from chromadb.config import Settings as ChromaSettings
 
 from ..core.config import settings
 from ..core.llm import get_llm, get_embeddings
+from ..core.google_reviews import fetch_reviews_by_name
 
 _chroma_client: chromadb.ClientAPI | None = None
 
@@ -79,23 +81,46 @@ def _resolve_lodging_name(user_input: str, names: list[str]) -> str | None:
     return best[0] if best else None
 
 
+async def _try_auto_ingest(lodging_name: str) -> str | None:
+    """
+    資料庫中找不到民宿時，即時透過 Google Places 查詢並匯入評論。
+    成功回傳實際存入 ChromaDB 的官方名稱；查無地點/無評論/API 未設定則回傳 None。
+    """
+    found = await asyncio.to_thread(fetch_reviews_by_name, lodging_name)
+    if found is None:
+        return None
+    official_name, reviews = found
+    if not reviews:
+        logger.warning(f"Google Places 找到『{official_name}』但無公開評論，無法自動補資料")
+        return None
+    add_reviews(official_name, reviews)
+    logger.info(f"自動從 Google Places 匯入『{official_name}』的 {len(reviews)} 則評論")
+    return official_name
+
+
 async def analyze_lodging(lodging_name: str, top_k: int = 8) -> dict:
     """
     Retrieve top-k relevant reviews for a lodging and ask LLM to score it.
     Returns JSON with: cleanliness_score, moto_score, summary, red_flags.
+    找不到既有資料時，會先嘗試透過 Google Places 即時抓評論補資料再重試一次。
     """
     collection = _get_chroma_collection()
-
-    # 尚未匯入任何評論
-    if collection.count() == 0:
-        return {"error": f"評論資料庫是空的，請先執行 scripts/ingest_sample_reviews.py"}
 
     # 模糊比對：把使用者輸入對應到資料庫的全名
     names = _list_lodging_names(collection)
     matched = _resolve_lodging_name(lodging_name, names)
+
+    auto_ingested = False
+    if matched is None:
+        matched = await _try_auto_ingest(lodging_name)
+        if matched is not None:
+            auto_ingested = True
+            collection = _get_chroma_collection()
+            names = _list_lodging_names(collection)
+
     if matched is None:
         return {
-            "error": f"找不到與『{lodging_name}』相符的民宿。"
+            "error": f"找不到與『{lodging_name}』相符的民宿，Google Places 也查無公開評論。"
                      f"目前資料庫有：{', '.join(names) if names else '（空）'}"
         }
 
@@ -137,6 +162,7 @@ async def analyze_lodging(lodging_name: str, top_k: int = 8) -> dict:
     if "error" not in result:
         result["matched_name"] = matched
         result["review_count"] = lodging_count
+        result["auto_ingested"] = auto_ingested
     return result
 
 

@@ -2,11 +2,13 @@
 POI Agent — 透過 Google Places API 查詢餐廳與景點。
 依使用者偏好（餐廳類型、預算、景點類型、評分門檻、室內外）篩選，
 並結合天氣做室內外加權。本 Agent 不呼叫 LLM。
+
+googlemaps client 是同步 API，用 asyncio.to_thread 包起來避免卡住 event loop，
+同一次查詢的多個關鍵字（不同餐廳類型/景點類型）用 asyncio.gather 平行送出。
 """
-from functools import lru_cache
-import googlemaps
+import asyncio
 from loguru import logger
-from ..core.config import settings
+from ..core.google_reviews import get_places_client as _client
 
 # 餐廳類型 → Google Places keyword
 CUISINE_KEYWORDS = {
@@ -37,14 +39,6 @@ OUTDOOR_TYPES = {
 }
 
 
-@lru_cache(maxsize=1)
-def _client() -> googlemaps.Client | None:
-    if not settings.google_places_api_key:
-        logger.warning("GOOGLE_PLACES_API_KEY 未設定，POI Agent 無法查詢")
-        return None
-    return googlemaps.Client(key=settings.google_places_api_key)
-
-
 def _infer_venue(types: list[str]) -> str:
     """由 Place types 推斷 indoor / outdoor / unknown。"""
     tset = set(types)
@@ -55,9 +49,9 @@ def _infer_venue(types: list[str]) -> str:
     return "unknown"
 
 
-def _search(query: str, place_type: str, min_rating: float,
-            min_price: int | None, max_price: int | None) -> list[dict]:
-    """文字搜尋 Google Places，回傳結構化清單。"""
+def _search_sync(query: str, place_type: str, min_rating: float,
+                  min_price: int | None, max_price: int | None) -> list[dict]:
+    """文字搜尋 Google Places（同步呼叫），回傳結構化清單。"""
     gmaps = _client()
     if gmaps is None:
         return []
@@ -91,7 +85,14 @@ def _search(query: str, place_type: str, min_rating: float,
     return out
 
 
-def fetch_pois(
+async def _search(query: str, place_type: str, min_rating: float,
+                   min_price: int | None, max_price: int | None) -> list[dict]:
+    return await asyncio.to_thread(
+        _search_sync, query, place_type, min_rating, min_price, max_price
+    )
+
+
+async def fetch_pois(
     destination: str,
     cuisines: list[str],
     attraction_types: list[str],
@@ -105,28 +106,31 @@ def fetch_pois(
     """
     回傳 {"restaurants": [...], "attractions": [...]}。
     室內外加權：venue_pref=auto 且降雨機率高時，優先室內。
+    每個關鍵字的查詢平行送出，避免序列等待拖慢多城市/多類型行程。
     """
     # 決定實際的室內外偏好
     effective_venue = venue_pref
     if venue_pref == "auto":
         effective_venue = "indoor" if rain_risk_pct >= 60 else "any"
 
-    # 餐廳
-    restaurants: list[dict] = []
-    for c in (cuisines or ["特色料理"]):
-        kw = CUISINE_KEYWORDS.get(c, c)
-        restaurants += _search(
-            f"{destination} {kw}", "restaurant",
-            min_rating, min_price, max_price,
-        )
+    restaurant_tasks = [
+        _search(f"{destination} {CUISINE_KEYWORDS.get(c, c)}", "restaurant",
+                min_rating, min_price, max_price)
+        for c in (cuisines or ["特色料理"])
+    ]
+    attraction_tasks = [
+        _search(f"{destination} {ATTRACTION_TYPES.get(a, ('tourist_attraction', a))[1]}",
+                ATTRACTION_TYPES.get(a, ("tourist_attraction", a))[0],
+                min_rating, None, None)
+        for a in (attraction_types or ["自然風景"])
+    ]
 
-    # 景點
-    attractions: list[dict] = []
-    for a in (attraction_types or ["自然風景"]):
-        ptype, kw = ATTRACTION_TYPES.get(a, ("tourist_attraction", a))
-        attractions += _search(
-            f"{destination} {kw}", ptype, min_rating, None, None,
-        )
+    restaurant_results, attraction_results = await asyncio.gather(
+        asyncio.gather(*restaurant_tasks),
+        asyncio.gather(*attraction_tasks),
+    )
+    restaurants = [item for sub in restaurant_results for item in sub]
+    attractions = [item for sub in attraction_results for item in sub]
 
     # 室內外加權排序：偏好的 venue 排前面
     def venue_sort_key(item: dict):

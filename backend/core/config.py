@@ -20,6 +20,16 @@ class Settings(BaseSettings):
     cwa_api_key: str = ""        # 中央氣象署
     google_places_api_key: str = ""
 
+    # 路線規劃（OSRM，預設用官方公用 demo server，僅供開發/展示）
+    osrm_base_url: str = "https://router.project-osrm.org"
+
+    # CORS 允許來源（逗號分隔），預設本機 Streamlit dev origin
+    cors_origins: str = "http://localhost:8501"
+
+    # 預算估算（新台幣）
+    fuel_price_per_liter: float = 32.0
+    meal_price_by_level: dict[int, int] = {0: 100, 1: 150, 2: 300, 3: 600, 4: 1200}
+
     # ChromaDB
     chroma_path: str = str(BASE_DIR / "data" / "chroma_db")
     chroma_collection: str = "lodging_reviews"
