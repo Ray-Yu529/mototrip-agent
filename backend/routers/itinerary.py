@@ -97,8 +97,14 @@ async def generate(req: ItineraryRequest):
     transport_note = TRANSPORT_NOTES.get(req.transport, req.transport)
     pref = req.preferences
 
-    # 處理城市清單：有途經城市就用它（含目的地），否則只用目的地
-    cities = req.waypoints if req.waypoints else [req.destination]
+    # 處理城市清單：有途經城市就用它，否則只用目的地；
+    # 若使用者填了途經城市卻忘記把目的地也列進去，補在最後，避免目的地被默默忽略
+    if req.waypoints:
+        cities = list(req.waypoints)
+        if req.destination and req.destination not in cities:
+            cities.append(req.destination)
+    else:
+        cities = [req.destination]
 
     start = date.fromisoformat(req.start_date)
     trip_dates = [(start + timedelta(days=i)).isoformat() for i in range(req.days)]

@@ -12,7 +12,7 @@ from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser
 from loguru import logger
 
-from ..core.llm import get_llm
+from ..core.llm import get_llm, invoke_chain
 
 ITINERARY_PROMPT = ChatPromptTemplate.from_messages([
     ("system", (
@@ -82,19 +82,23 @@ async def generate_itinerary(
 ) -> dict:
     chain = ITINERARY_PROMPT | get_llm() | StrOutputParser()
 
-    raw = await chain.ainvoke({
-        "theme": theme,
-        "transport": transport,
-        "transport_note": transport_note,
-        "origin": origin,
-        "cities": " → ".join(cities),
-        "start_date": start_date,
-        "days": days,
-        "preferences_note": preferences_note,
-        "weather_by_city": json.dumps(weather_by_city, ensure_ascii=False, indent=2),
-        "poi_list": json.dumps(poi_list, ensure_ascii=False, indent=2),
-        "lodging_info": json.dumps(lodging_info, ensure_ascii=False, indent=2),
-    })
+    try:
+        raw = await invoke_chain(chain, {
+            "theme": theme,
+            "transport": transport,
+            "transport_note": transport_note,
+            "origin": origin,
+            "cities": " → ".join(cities),
+            "start_date": start_date,
+            "days": days,
+            "preferences_note": preferences_note,
+            "weather_by_city": json.dumps(weather_by_city, ensure_ascii=False, separators=(",", ":")),
+            "poi_list": json.dumps(poi_list, ensure_ascii=False, separators=(",", ":")),
+            "lodging_info": json.dumps(lodging_info, ensure_ascii=False, separators=(",", ":")),
+        })
+    except Exception as exc:
+        logger.error(f"行程生成 LLM 呼叫失敗（已重試）: {exc}")
+        return {"error": f"行程生成失敗，LLM 服務暫時無法連線：{exc}"}
 
     return _parse_json_safe(raw)
 
@@ -120,10 +124,14 @@ ADJUST_PROMPT = ChatPromptTemplate.from_messages([
 async def adjust_itinerary(itinerary: dict, instruction: str) -> dict:
     """對話式行程微調：既有行程 + 一句話指令 → 修改後的行程 JSON（額外 1 次 LLM 呼叫）。"""
     chain = ADJUST_PROMPT | get_llm() | StrOutputParser()
-    raw = await chain.ainvoke({
-        "itinerary_json": json.dumps(itinerary, ensure_ascii=False, indent=2),
-        "instruction": instruction,
-    })
+    try:
+        raw = await invoke_chain(chain, {
+            "itinerary_json": json.dumps(itinerary, ensure_ascii=False, separators=(",", ":")),
+            "instruction": instruction,
+        })
+    except Exception as exc:
+        logger.error(f"行程微調 LLM 呼叫失敗（已重試）: {exc}")
+        return {"error": f"行程微調失敗，LLM 服務暫時無法連線：{exc}"}
     return _parse_json_safe(raw)
 
 
@@ -166,21 +174,50 @@ def _parse_json_safe(raw: str) -> dict:
 
 
 def _try_repair_truncated(text: str) -> dict | None:
-    """JSON 被截斷時，砍到最後一個完整 stop 並補上閉合括號。"""
+    """
+    JSON 被截斷時，砍到最後一個完整巢狀結構並補上閉合括號。
+
+    用堆疊追蹤目前開啟的括號「順序」，收尾時依「後開先關」補上正確的
+    }/] 序列 —— 若只是統計數量後「先補完所有 ] 再補所有 }」
+    （曾經的實作方式），像本專案 itinerary（物件）包 stops（陣列）包
+    stop（物件）這種混合巢狀，補出來的括號順序會是錯的，導致 json.loads
+    直接失敗、白白重試。同時略過字串內容中的括號字元，避免 note 等欄位
+    剛好含有 {}[] 時誤判結構邊界。
+    只在字元為 `}` 或 `]`（可能的完整結構收尾點）嘗試候選，
+    比起「每個字元位置都嘗試」大幅減少候選數與逐位重新掃描的開銷。
+    """
     start = text.find("{")
     if start < 0:
         return None
     snippet = text[start:]
-    # 逐步往回砍，找出可被補齊成合法 JSON 的最長前綴
-    for end in range(len(snippet), 0, -1):
-        chunk = snippet[:end]
-        # 補上缺少的 ] 與 }
-        opens = chunk.count("{") - chunk.count("}")
-        brackets = chunk.count("[") - chunk.count("]")
-        if opens < 0 or brackets < 0:
+
+    stack: list[str] = []          # 依開啟順序記錄尚待補上的收尾字元
+    cut_points: list[tuple[int, list[str]]] = []
+    in_string = False
+    escaped = False
+    for i, ch in enumerate(snippet):
+        if in_string:
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif ch == '"':
+                in_string = False
             continue
-        candidate = chunk.rstrip().rstrip(",")
-        candidate += "]" * brackets + "}" * opens
+        if ch == '"':
+            in_string = True
+        elif ch == "{":
+            stack.append("}")
+        elif ch == "[":
+            stack.append("]")
+        elif ch in "}]":
+            if stack and stack[-1] == ch:
+                stack.pop()
+            cut_points.append((i + 1, list(stack)))
+
+    for end, remaining in reversed(cut_points):
+        candidate = snippet[:end].rstrip().rstrip(",")
+        candidate += "".join(reversed(remaining))
         try:
             return json.loads(candidate)
         except json.JSONDecodeError:

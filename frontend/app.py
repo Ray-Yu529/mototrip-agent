@@ -6,6 +6,7 @@ import streamlit as st
 import pydeck as pdk
 import httpx
 import hmac
+import html
 import json
 import os
 from datetime import date, timedelta
@@ -259,19 +260,24 @@ REPORT_EMOJI = {"餐廳": "🍜", "景點": "📍", "住宿": "🏠", "加油站
 
 
 def build_report_html(data: dict) -> str:
-    """把行程資料組成可列印的獨立 HTML 報告（瀏覽器 Ctrl+P 可存成 PDF）。"""
+    """
+    把行程資料組成可列印的獨立 HTML 報告（瀏覽器 Ctrl+P 可存成 PDF）。
+    stop 內容來自 LLM 生成與 Google Places 第三方資料，並非我方可控輸入，
+    嵌入 HTML 前一律 escape，避免下載的報告檔被夾帶的 script/tag 影響。
+    """
+    e = lambda v: html.escape(str(v))  # noqa: E731
     weather = data.get("weather", {})
-    theme = data.get("theme", "行程")
-    transport = data.get("transport", "")
+    theme = e(data.get("theme", "行程"))
+    transport = e(data.get("transport", ""))
     total_days = data.get("total_days", 1)
 
     w_line = ""
     if weather and not weather.get("error"):
         w_line = (
-            f'<p class="meta">天氣：{weather.get("temp_range","")}　'
-            f'降雨機率 {weather.get("rain_risk_pct","?")}%　'
-            f'最佳時段 {weather.get("best_riding_window","")}</p>'
-            f'<p class="meta">穿搭：{weather.get("clothing_tip","")}</p>'
+            f'<p class="meta">天氣：{e(weather.get("temp_range",""))}　'
+            f'降雨機率 {e(weather.get("rain_risk_pct","?"))}%　'
+            f'最佳時段 {e(weather.get("best_riding_window",""))}</p>'
+            f'<p class="meta">穿搭：{e(weather.get("clothing_tip",""))}</p>'
         )
 
     days_html = []
@@ -280,22 +286,22 @@ def build_report_html(data: dict) -> str:
         for s in day.get("stops", []):
             emoji = REPORT_EMOJI.get(s.get("type", ""), "▸")
             transfer = (
-                f'<div class="transfer">🚌 {s.get("transfer","")}</div>'
+                f'<div class="transfer">🚌 {e(s.get("transfer",""))}</div>'
                 if s.get("transfer") else ""
             )
-            note = f'<div class="note">{s.get("note","")}</div>' if s.get("note") else ""
+            note = f'<div class="note">{e(s.get("note",""))}</div>' if s.get("note") else ""
             parking = (
-                f'<div class="parking">🅿 {s.get("parking","")}</div>'
+                f'<div class="parking">🅿 {e(s.get("parking",""))}</div>'
                 if s.get("parking") else ""
             )
-            alts = [o.get("place", "") for o in (s.get("options") or [])][1:]
+            alts = [e(o.get("place", "")) for o in (s.get("options") or [])][1:]
             alts_html = (
                 f'<div class="alts">其他選擇：{"、".join(alts)}</div>' if alts else ""
             )
             rows.append(
-                f'<tr><td class="time">{s.get("time","")}</td>'
-                f'<td>{transfer}<b>{emoji} {s.get("place","")}</b>'
-                f'<span class="tag">{s.get("type","")}</span>'
+                f'<tr><td class="time">{e(s.get("time",""))}</td>'
+                f'<td>{transfer}<b>{emoji} {e(s.get("place",""))}</b>'
+                f'<span class="tag">{e(s.get("type",""))}</span>'
                 f'{note}{parking}{alts_html}</td></tr>'
             )
         route = day.get("route") or {}
@@ -305,10 +311,10 @@ def build_report_html(data: dict) -> str:
             if route.get("distance_km") is not None else ""
         )
         gas_html = "".join(
-            f'<p class="meta gas">⛽ {w}</p>' for w in day.get("gas_warnings", [])
+            f'<p class="meta gas">⛽ {e(w)}</p>' for w in day.get("gas_warnings", [])
         )
         days_html.append(
-            f'<h2>Day {day.get("day","")} <span class="date">{day.get("date","")}</span></h2>'
+            f'<h2>Day {e(day.get("day",""))} <span class="date">{e(day.get("date",""))}</span></h2>'
             f'{route_line}{gas_html}'
             f'<table>{"".join(rows)}</table>'
         )
@@ -316,7 +322,7 @@ def build_report_html(data: dict) -> str:
     tips = data.get("survival_tips", [])
     tips_html = ""
     if tips:
-        lis = "".join(f"<li>{t}</li>" for t in tips)
+        lis = "".join(f"<li>{e(t)}</li>" for t in tips)
         tips_html = f"<h2>生存守則</h2><ul>{lis}</ul>"
 
     budget = data.get("budget")
@@ -328,7 +334,7 @@ def build_report_html(data: dict) -> str:
             f'油錢 NT$ {budget.get("total_fuel_cost_twd",0)}　'
             f'餐飲 NT$ {budget.get("total_meal_cost_twd",0)}　'
             f'合計 NT$ {budget.get("estimated_total_twd",0)}</p>'
-            f'<p class="meta">{budget.get("note","")}</p>'
+            f'<p class="meta">{e(budget.get("note",""))}</p>'
         )
 
     return f"""<!DOCTYPE html>

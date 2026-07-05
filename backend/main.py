@@ -5,12 +5,16 @@ from loguru import logger
 
 from .routers import weather, lodging, itinerary
 from .core.config import settings
+from .core import routing as routing_core
+from .agents import weather_agent
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info("MotoTrip Agent API started")
     yield
+    await weather_agent.aclose_client()
+    await routing_core.aclose_client()
 
 
 app = FastAPI(

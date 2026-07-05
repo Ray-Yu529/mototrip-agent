@@ -8,7 +8,15 @@
 import asyncio
 import httpx
 from loguru import logger
+from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 from .config import settings
+
+_network_retry = retry(
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=1, min=1, max=8),
+    retry=retry_if_exception_type((httpx.TransportError, httpx.HTTPStatusError)),
+    reraise=True,
+)
 
 # OSRM demo server 只提供 driving profile；機車/重機/汽車路網相近，皆使用 driving，
 # 自行車另外走 cycling profile（避開快速道路、路網不同）。
@@ -24,6 +32,30 @@ PROFILE_BY_TRANSPORT = {
 FALLBACK_SPEED_KMH = {
     "機車": 40, "重機": 45, "自行車": 15, "汽車": 50, "大眾運輸": 35,
 }
+
+# 共用單一 AsyncClient（而非每次查詢都新建），多天行程平行查詢時重用連線池。
+_client: httpx.AsyncClient | None = None
+
+
+def _get_client() -> httpx.AsyncClient:
+    global _client
+    if _client is None:
+        _client = httpx.AsyncClient(timeout=15)
+    return _client
+
+
+async def aclose_client() -> None:
+    global _client
+    if _client is not None:
+        await _client.aclose()
+        _client = None
+
+
+@_network_retry
+async def _get_osrm_json(url: str) -> dict:
+    resp = await _get_client().get(url, params={"overview": "full", "geometries": "geojson"})
+    resp.raise_for_status()
+    return resp.json()
 
 
 async def get_route(
@@ -42,14 +74,9 @@ async def get_route(
     url = f"{settings.osrm_base_url}/route/v1/{profile}/{coord_str}"
 
     try:
-        async with httpx.AsyncClient(timeout=15) as client:
-            resp = await client.get(
-                url, params={"overview": "full", "geometries": "geojson"}
-            )
-            resp.raise_for_status()
-            data = resp.json()
+        data = await _get_osrm_json(url)
     except Exception as exc:
-        logger.warning(f"OSRM 路線查詢失敗: {exc}")
+        logger.warning(f"OSRM 路線查詢失敗（已重試）: {exc}")
         return None
 
     if data.get("code") != "Ok" or not data.get("routes"):

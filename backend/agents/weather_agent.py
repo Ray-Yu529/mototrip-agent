@@ -15,7 +15,15 @@ import httpx
 from datetime import date, datetime
 from pathlib import Path
 from loguru import logger
+from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 from ..core.config import settings
+
+_network_retry = retry(
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=1, min=1, max=8),
+    retry=retry_if_exception_type((httpx.TransportError, httpx.HTTPStatusError)),
+    reraise=True,
+)
 
 CWA_BASE = "https://opendata.cwa.gov.tw/api/v1/rest/datastore"
 LOCATIONS_FILE = Path(__file__).resolve().parent.parent / "data" / "cwa_locations.json"
@@ -37,6 +45,24 @@ LAPSE_RATE = 0.6  # °C per 100 m gain
 _TWCA_SSL_CTX = ssl.create_default_context()
 if hasattr(ssl, "VERIFY_X509_STRICT"):
     _TWCA_SSL_CTX.verify_flags &= ~ssl.VERIFY_X509_STRICT
+
+# 共用單一 AsyncClient（而非每次查詢都新建），減少 TLS handshake 開銷；
+# 多城市行程會平行呼叫多次 fetch_forecast，共用連線池效果更明顯。
+_client: httpx.AsyncClient | None = None
+
+
+def _get_client() -> httpx.AsyncClient:
+    global _client
+    if _client is None:
+        _client = httpx.AsyncClient(timeout=10, verify=_TWCA_SSL_CTX)
+    return _client
+
+
+async def aclose_client() -> None:
+    global _client
+    if _client is not None:
+        await _client.aclose()
+        _client = None
 
 
 def altitude_temp_adjust(base_temp_c: float, altitude_m: float) -> float:
@@ -77,6 +103,13 @@ def _resolve_endpoint(location: str) -> tuple[str, str]:
     return f"{CWA_BASE}/{DATASET_MAP['南投縣']}", "南投市"
 
 
+@_network_retry
+async def _get_cwa_json(url: str, params: dict) -> dict:
+    resp = await _get_client().get(url, params=params)
+    resp.raise_for_status()
+    return resp.json()
+
+
 async def fetch_forecast(location: str) -> dict:
     """呼叫 CWA API，回傳原始 JSON（含未來 7 天、每天 2 個 12 小時時段）。"""
     if not settings.cwa_api_key:
@@ -88,10 +121,11 @@ async def fetch_forecast(location: str) -> dict:
         "Authorization": settings.cwa_api_key,
         "locationName": api_location,
     }
-    async with httpx.AsyncClient(timeout=10, verify=_TWCA_SSL_CTX) as client:
-        resp = await client.get(url, params=params)
-        resp.raise_for_status()
-        data = resp.json()
+    try:
+        data = await _get_cwa_json(url, params)
+    except Exception as exc:
+        logger.error(f"CWA API 呼叫失敗（已重試 3 次）: {exc}，改用 mock 資料")
+        return _mock_forecast(location)
 
     # CWA 不保證 locationName 參數一定有效過濾，改為 client-side 篩選
     _filter_location(data, api_location)

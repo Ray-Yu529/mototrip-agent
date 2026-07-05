@@ -17,6 +17,19 @@ def get_places_client() -> googlemaps.Client | None:
     return googlemaps.Client(key=settings.google_places_api_key)
 
 
+def geocode_address(gmaps: googlemaps.Client, query: str) -> tuple[float, float] | None:
+    """地名 → (lat, lon)。查無結果或 API 失敗回傳 None。"""
+    try:
+        results = gmaps.geocode(query, region="tw", language="zh-TW")
+    except Exception as exc:
+        logger.warning(f"Google geocode 失敗 ({query}): {exc}")
+        return None
+    if not results:
+        return None
+    loc = results[0]["geometry"]["location"]
+    return loc["lat"], loc["lng"]
+
+
 def find_place_id(gmaps: googlemaps.Client, name: str) -> tuple[str, str] | None:
     """回傳 (place_id, 正式名稱)；找不到回傳 None。"""
     try:

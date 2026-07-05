@@ -13,8 +13,19 @@ import chromadb
 from chromadb.config import Settings as ChromaSettings
 
 from ..core.config import settings
-from ..core.llm import get_llm, get_embeddings
+from ..core.llm import get_llm, get_embeddings, invoke_chain
 from ..core.google_reviews import fetch_reviews_by_name
+
+# 每次分析都用同一句固定 query 檢索，embedding 結果快取起來避免重複呼叫 embedding API
+_QUERY_TEXT = "停車場 機車 重機 清潔 霉味 衛生 床鋪 環境"
+_query_vec_cache: list[float] | None = None
+
+
+def _get_query_vec() -> list[float]:
+    global _query_vec_cache
+    if _query_vec_cache is None:
+        _query_vec_cache = get_embeddings().embed_query(_QUERY_TEXT)
+    return _query_vec_cache
 
 _chroma_client: chromadb.ClientAPI | None = None
 
@@ -124,10 +135,7 @@ async def analyze_lodging(lodging_name: str, top_k: int = 8) -> dict:
                      f"目前資料庫有：{', '.join(names) if names else '（空）'}"
         }
 
-    embeddings = get_embeddings()
-
-    query = "停車場 機車 重機 清潔 霉味 衛生 床鋪 環境"
-    query_vec = embeddings.embed_query(query)
+    query_vec = _get_query_vec()
 
     lodging_count = len(collection.get(where={"lodging": matched})["ids"])
 
@@ -155,7 +163,11 @@ async def analyze_lodging(lodging_name: str, top_k: int = 8) -> dict:
     ])
 
     chain = prompt | get_llm() | StrOutputParser()
-    raw = await chain.ainvoke({"name": matched, "reviews": retrieved})
+    try:
+        raw = await invoke_chain(chain, {"name": matched, "reviews": retrieved})
+    except Exception as exc:
+        logger.error(f"住宿分析 LLM 呼叫失敗（已重試）: {exc}")
+        return {"error": f"住宿分析失敗，LLM 服務暫時無法連線：{exc}"}
 
     result = _parse_json_safe(raw, matched)
     # 標示實際對應到的全名（供前端顯示「已對應到 …」）

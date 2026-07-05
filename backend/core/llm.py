@@ -6,8 +6,26 @@ LLM / Embedding 工廠。
 """
 from functools import lru_cache
 from langchain_core.language_models import BaseChatModel
+from langchain_core.runnables import Runnable
 from langchain_core.embeddings import Embeddings
+from loguru import logger
+from tenacity import retry, stop_after_attempt, wait_exponential, before_sleep_log
 from .config import settings
+
+# NVIDIA 免費 tier 常見 429（配額限流）與暫時性網路錯誤，用指數退避重試；
+# 若重試後仍失敗，讓例外往上拋，由呼叫端轉成統一的 {"error": ...} 回應。
+llm_retry = retry(
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=1, min=2, max=20),
+    before_sleep=before_sleep_log(logger, "WARNING"),
+    reraise=True,
+)
+
+
+@llm_retry
+async def invoke_chain(chain: Runnable, payload: dict) -> str:
+    """帶重試的 chain.ainvoke，供 routing_agent / rag_agent 共用。"""
+    return await chain.ainvoke(payload)
 
 
 @lru_cache(maxsize=1)
