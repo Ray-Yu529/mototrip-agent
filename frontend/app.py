@@ -189,9 +189,27 @@ with st.sidebar:
 
     origin = st.text_input("出發地點", value="台中市")
     destination = st.text_input("目的地", value="仁愛鄉")
+
+    round_island = st.checkbox(
+        "環島模式",
+        help="自動填入環島途經城市（可再手動增刪）；目的地填出發地即可繞一圈回原點",
+    )
+    if round_island:
+        ri_direction = st.radio(
+            "環島方向",
+            options=["逆時針（先東岸：宜蘭→花蓮→台東）", "順時針（先西岸：台中→台南→高雄）"],
+            horizontal=True,
+        )
+        ring = ["台北", "宜蘭", "花蓮", "台東", "高雄", "台南", "嘉義", "台中"]
+        if ri_direction.startswith("順"):
+            ring.reverse()
+        default_waypoints = ",".join(ring)
+    else:
+        default_waypoints = ""
+
     waypoints_raw = st.text_input(
         "途經城市（多目的地，選填）",
-        value="",
+        value=default_waypoints,
         placeholder="台北,宜蘭,花蓮,台東（用逗號分隔）",
         help="填了就走多城市/環島模式，天數自動分配到各城市；留空則只規劃單一目的地",
     )
