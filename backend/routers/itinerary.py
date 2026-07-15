@@ -9,6 +9,7 @@ from ..agents.routing_agent import generate_itinerary, adjust_itinerary
 from ..agents.poi_agent import fetch_pois
 from ..agents.gas_agent import check_route_fuel_stops
 from ..agents.budget_agent import estimate_budget
+from ..agents.rail_agent import fetch_leg_trains
 from ..core.geocode import enrich_itinerary_coords
 from ..core.routing import get_routes_for_days
 from ..core.export import build_gpx, build_ics
@@ -136,16 +137,29 @@ async def generate(req: ItineraryRequest):
         )
         return city, weather_dates, poi_result
 
-    # 各城市查詢彼此獨立，與住宿 RAG 分析（若有）一起平行送出
+    # 大眾運輸：依序把「出發地→各城市」切成移動段，查每段當天的真實台鐵班次給 LLM 引用
+    rail_legs: list[tuple[str, str, str]] = []
+    if req.transport == "大眾運輸":
+        leg_cities = [req.origin] + cities
+        rail_legs = [
+            (leg_cities[i], leg_cities[i + 1], trip_dates[min(i, len(trip_dates) - 1)])
+            for i in range(len(leg_cities) - 1)
+            if leg_cities[i] != leg_cities[i + 1]
+        ]
+
+    async def _none():
+        return None
+
+    # 各城市查詢彼此獨立，與住宿 RAG 分析（若有）、台鐵班次（大眾運輸時）一起平行送出
     city_task = asyncio.gather(*(_fetch_city(c) for c in cities))
     lodging_task = (
-        analyze_lodging(req.lodging_name.strip()) if req.lodging_name.strip() else None
+        analyze_lodging(req.lodging_name.strip()) if req.lodging_name.strip() else _none()
     )
-    if lodging_task is not None:
-        city_results, rag = await asyncio.gather(city_task, lodging_task)
-    else:
-        city_results = await city_task
-        rag = None
+    rail_task = (
+        asyncio.gather(*(fetch_leg_trains(o, d, dt) for o, d, dt in rail_legs))
+        if rail_legs else _none()
+    )
+    city_results, rag, rail_info = await asyncio.gather(city_task, lodging_task, rail_task)
 
     weather_by_city: dict[str, dict] = {}
     poi_pool_by_city: dict[str, dict] = {}
@@ -202,6 +216,7 @@ async def generate(req: ItineraryRequest):
         poi_list=poi_list,
         lodging_info=lodging_info,
         preferences_note=preferences_note,
+        rail_info=rail_info or [],
     )
 
     if "error" in result:
@@ -221,6 +236,8 @@ async def generate(req: ItineraryRequest):
     result["weather"] = weather_info
     result["weather_by_city"] = weather_by_city   # 每城市每日期的完整預報，供前端每日天氣晶片使用
     result["poi_pool"] = poi_result_first
+    if rail_info:
+        result["rail_options"] = rail_info        # 大眾運輸：各段真實台鐵班次，供前端顯示參考
 
     return result
 
@@ -282,8 +299,8 @@ async def adjust(req: AdjustRequest):
         await enrich_itinerary_coords(result["itinerary"], known_coords=known_coords)
         result["budget"] = await _enrich_route_gas_budget(result["itinerary"], transport)
 
-    # 保留原本附帶的天氣/POI 資訊（微調不會重新查天氣或景點）
-    for key in ("weather", "weather_by_city", "poi_pool"):
+    # 保留原本附帶的天氣/POI/台鐵資訊（微調不會重新查天氣、景點或班次）
+    for key in ("weather", "weather_by_city", "poi_pool", "rail_options"):
         if key in req.itinerary:
             result[key] = req.itinerary[key]
 

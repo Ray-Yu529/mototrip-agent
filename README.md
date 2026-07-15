@@ -17,6 +17,7 @@ LLM 後端可一鍵切換：**NVIDIA NIM 雲端**（開發期推薦）或 **Olla
 | 真實路線規劃 | 串接 OSRM 算出每日實際騎乘距離/時間/道路路線，取代 LLM 憑印象猜測 |
 | 沿線加油站預警 | 依真實路線用 Google Places 查詢沿途加油站，無油站路段過長時主動警示 |
 | 預算估算 | 依真實里程換算油錢、依用餐預算等級估算餐飲費，提供每日明細 |
+| 台鐵查詢（TDX） | 車站查詢、起訖站時刻表與各車種票價、車站即時到離站看板含誤點資訊（約 2 分鐘延遲）；大眾運輸行程自動把各段真實班次餵給 LLM，transfer 引用實際車次 |
 | 行程匯出 | HTML 報告 / JSON / GPX（給導航機/地圖 App）/ ICS（行事曆） |
 | 對話式行程微調 | 生成後用一句話描述想怎麼改，AI 局部重排並重新計算路線與預算 |
 
@@ -29,6 +30,7 @@ LLM 後端可一鍵切換：**NVIDIA NIM 雲端**（開發期推薦）或 **Olla
 | CWA 開放資料 | 天氣預報 | 建議（無 key 時用 mock 資料） |
 | Google Places API | 景點/餐廳/民宿評論/加油站查詢 | 建議 |
 | OSRM（`router.project-osrm.org`） | 真實路線/距離/時間 | 免 key，預設用官方公用 demo server；正式環境建議自架服務並改 `OSRM_BASE_URL` |
+| TDX 運輸資料流通服務 | 台鐵時刻表/票價/即時動態 | 建議（無 key 時用 mock 資料）；交通部官方平台，前身 PTX 已於 2022 年底停止服務 |
 
 ---
 
@@ -94,6 +96,7 @@ cp .env.example .env
 | `NVIDIA_API_KEY` | nvapi-... | [build.nvidia.com](https://build.nvidia.com) 免費註冊 |
 | `CWA_API_KEY` | CWA-... | [opendata.cwa.gov.tw](https://opendata.cwa.gov.tw) 免費申請 |
 | `GOOGLE_PLACES_API_KEY` | AIzaSy... | Google Cloud Console（選填）|
+| `TDX_CLIENT_ID` / `TDX_CLIENT_SECRET` | 台鐵查詢用 | [tdx.transportdata.tw](https://tdx.transportdata.tw/) 免費註冊 → 會員中心 → API 金鑰（選填）|
 | `OSRM_BASE_URL` | 預設官方 demo server | 選填，正式環境建議自架 |
 | `FUEL_PRICE_PER_LITER` | 預算估算用油價，預設 32 | 選填 |
 | `CORS_ORIGINS` | 允許的前端來源，逗號分隔 | 選填，預設本機 Streamlit |
@@ -158,6 +161,11 @@ curl "http://localhost:8000/weather/advice?location=仁愛鄉&altitude_m=1500"
 # 住宿防雷（需先匯入評論）
 curl "http://localhost:8000/lodging/analyze?lodging_name=合歡山雲端小屋"
 
+# 台鐵：車站關鍵字查詢 / 起訖站時刻表+票價 / 車站即時看板（誤點資訊）
+curl "http://localhost:8000/rail/stations?keyword=竹"
+curl "http://localhost:8000/rail/timetable?origin=台北&destination=花蓮&date=2026-07-20"
+curl "http://localhost:8000/rail/liveboard?station=台中"
+
 # 行程生成（2 天重機跑山）
 curl -X POST http://localhost:8000/itinerary/generate \
   -H "Content-Type: application/json" \
@@ -182,7 +190,7 @@ pip install pytest
 pytest tests/ -v
 ```
 
-測試涵蓋天氣逐日解析、全 22 縣市對照表、加油站抽樣/距離計算、預算估算、GPX/ICS 輸出格式、座標模糊比對等純邏輯模組（不需要 API key 或網路）。
+測試涵蓋天氣逐日解析、全 22 縣市對照表、加油站抽樣/距離計算、預算估算、GPX/ICS 輸出格式、座標模糊比對、台鐵站名比對與時刻表/票價/即時看板解析等純邏輯模組（不需要 API key 或網路）。
 
 ---
 
@@ -206,11 +214,13 @@ mototrip-agent/
 │   │   ├── poi_agent.py        # Google Places 景點/餐廳查詢，async 平行送出（無 LLM）
 │   │   ├── gas_agent.py        # 沿線加油站查詢與無油站路段警示（無 LLM）
 │   │   ├── budget_agent.py     # 油錢/餐飲預算估算（無 LLM）
+│   │   ├── rail_agent.py       # TDX 台鐵時刻表/票價/即時看板（無 LLM）
 │   │   ├── rag_agent.py        # ChromaDB 檢索 + LLM 評分，查無資料時自動補抓評論
 │   │   └── routing_agent.py    # 多日行程整合（LLM 呼叫 ×1）+ 對話式微調（LLM 呼叫 ×1）
 │   └── routers/
 │       ├── weather.py
 │       ├── lodging.py
+│       ├── rail.py             # /stations /timetable /liveboard
 │       └── itinerary.py        # /generate /adjust /export/gpx /export/ics
 ├── frontend/
 │   └── app.py                  # Streamlit UI（白底黑字極簡風）
@@ -243,7 +253,9 @@ mototrip-agent/
     │
     ├─ Routing（OSRM）──▶ 每日站點串成真實道路距離/時間/路線幾何        （無 LLM）
     ├─ Gas Agent ───────▶ 沿真實路線查詢加油站、無油站路段警示          （無 LLM）
-    └─ Budget Agent ────▶ 依真實里程 + 用餐預算估算費用                 （無 LLM）
+    ├─ Budget Agent ────▶ 依真實里程 + 用餐預算估算費用                 （無 LLM）
+    └─ Rail Agent ──────▶ TDX 台鐵時刻表/票價/即時誤點；大眾運輸行程時    （無 LLM）
+                          各段真實班次餵給 Routing Agent 引用實際車次
 
 使用者事後微調（選用）
     └─ Routing Agent（adjust）──▶ 既有行程 + 一句話指令

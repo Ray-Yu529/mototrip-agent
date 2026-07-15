@@ -3,10 +3,10 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from loguru import logger
 
-from .routers import weather, lodging, itinerary
+from .routers import weather, lodging, itinerary, rail
 from .core.config import settings
 from .core import routing as routing_core
-from .agents import weather_agent
+from .agents import weather_agent, rail_agent
 
 
 @asynccontextmanager
@@ -15,6 +15,7 @@ async def lifespan(app: FastAPI):
     yield
     await weather_agent.aclose_client()
     await routing_core.aclose_client()
+    await rail_agent.aclose_client()
 
 
 app = FastAPI(
@@ -34,6 +35,7 @@ app.add_middleware(
 app.include_router(weather.router)
 app.include_router(lodging.router)
 app.include_router(itinerary.router)
+app.include_router(rail.router)
 
 
 @app.get("/health")

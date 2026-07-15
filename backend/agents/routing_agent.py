@@ -32,7 +32,10 @@ ITINERARY_PROMPT = ChatPromptTemplate.from_messages([
         "7. 每個 stop 請加上 city 欄位標示所在城市\n"
         "8. 遵守使用者偏好（見下方偏好設定）\n"
         "9. **transfer 欄位**：描述「從上一站移動到本站」的方式，須符合交通方式：\n"
-        "   - 大眾運輸：寫出**具體班次/路線**（例：「搭台鐵區間車至○○站，轉○○客運往△△，約50分鐘」）\n"
+        "   - 大眾運輸：城市間移動**必須優先引用「台鐵班次參考」中的真實班次**"
+        "（寫出車次號與開/到時間，例：「搭台鐵自強(3000) 402次 06:20開 08:57到花蓮」），"
+        "並選擇與行程時間銜接合理的班次；參考標示「無台鐵直達」的路段才改建議客運；"
+        "市區內短程移動用客運/計程車/步行描述\n"
         "   - 機車/重機/自行車：寫主要路線與預估時間（例：「台14甲線往合歡山，約40分鐘」）\n"
         "   - 汽車：寫主要道路與預估車程\n"
         "   每天第一站的 transfer 寫「行程起點」即可\n"
@@ -60,6 +63,7 @@ ITINERARY_PROMPT = ChatPromptTemplate.from_messages([
         "偏好設定：{preferences_note}\n\n"
         "各城市天氣：\n{weather_by_city}\n\n"
         "推薦景點／餐廳（含 city 城市 + venue 室內外標記）：\n{poi_list}\n\n"
+        "台鐵班次參考（TDX 真實時刻表，大眾運輸城市間移動請引用）：\n{rail_info}\n\n"
         "住宿防雷分析：\n{lodging_info}"
     )),
 ])
@@ -79,6 +83,7 @@ async def generate_itinerary(
     poi_list: list[dict],
     lodging_info: dict,
     preferences_note: str = "無特別偏好",
+    rail_info: list | None = None,
 ) -> dict:
     chain = ITINERARY_PROMPT | get_llm() | StrOutputParser()
 
@@ -94,6 +99,10 @@ async def generate_itinerary(
             "preferences_note": preferences_note,
             "weather_by_city": json.dumps(weather_by_city, ensure_ascii=False, separators=(",", ":")),
             "poi_list": json.dumps(poi_list, ensure_ascii=False, separators=(",", ":")),
+            "rail_info": (
+                json.dumps(rail_info, ensure_ascii=False, separators=(",", ":"))
+                if rail_info else "無（非大眾運輸行程）"
+            ),
             "lodging_info": json.dumps(lodging_info, ensure_ascii=False, separators=(",", ":")),
         })
     except Exception as exc:

@@ -391,8 +391,8 @@ def build_report_html(data: dict) -> str:
 
 
 # ── 主內容區：分頁 ───────────────────────────────────────────────────────
-tab_itinerary, tab_weather, tab_lodging = st.tabs(
-    ["行程規劃", "天氣 & 騎乘建議", "住宿防雷分析"]
+tab_itinerary, tab_weather, tab_lodging, tab_rail = st.tabs(
+    ["行程規劃", "天氣 & 騎乘建議", "住宿防雷分析", "台鐵查詢"]
 )
 
 # ── Tab 1：行程規劃 ──────────────────────────────────────────────────────
@@ -666,6 +666,34 @@ with tab_itinerary:
                         f"餐飲 {d.get('meal_stops')} 餐 NT$ {d.get('meal_cost_twd')}"
                     )
 
+        # ── 台鐵班次參考（大眾運輸行程才有）─────────────────────
+        rail_opts = data.get("rail_options", [])
+        if rail_opts:
+            st.subheader("台鐵班次參考（TDX 真實時刻表）")
+            for leg in rail_opts:
+                if leg.get("trains"):
+                    st.markdown(
+                        f"**{leg['leg']}**"
+                        f"（{leg.get('from_station', '')} → {leg.get('to_station', '')}，"
+                        f"{leg.get('date', '')}）"
+                    )
+                    st.dataframe(
+                        [{
+                            "車次": t.get("車次", ""),
+                            "車種": t.get("車種", ""),
+                            "開車": t.get("開", ""),
+                            "到達": t.get("到", ""),
+                        } for t in leg["trains"]],
+                        use_container_width=True, hide_index=True,
+                    )
+                    fares = leg.get("adult_fares", {})
+                    if fares:
+                        st.caption("成人票價：" + "；".join(
+                            f"{k} {v} 元" for k, v in fares.items()
+                        ))
+                else:
+                    st.markdown(f"**{leg.get('leg', '')}**：{leg.get('note', '')}")
+
         # ── 對話式行程微調 ──────────────────────────────────────
         if data.get("itinerary"):
             st.divider()
@@ -839,3 +867,114 @@ with tab_lodging:
                 )
     else:
         st.info("點擊「開始防雷分析」，系統將從評論資料庫中檢索並分析")
+
+# ── Tab 4：台鐵查詢（TDX）────────────────────────────────────────────────
+with tab_rail:
+    st.markdown("資料來源：交通部 **TDX 運輸資料流通服務**（即時動態約有 2 分鐘延遲）")
+
+    st.subheader("時刻表與票價")
+    col_o, col_d, col_dt = st.columns(3)
+    with col_o:
+        rail_origin = st.text_input("出發站", value="台北", key="rail_origin")
+    with col_d:
+        rail_dest = st.text_input("到達站", value="花蓮", key="rail_dest")
+    with col_dt:
+        rail_date = st.date_input("乘車日期", key="rail_date")
+
+    if st.button("查詢時刻表", key="rail_tt_btn"):
+        with st.spinner(f"查詢 {rail_origin} → {rail_dest} 時刻表中..."):
+            try:
+                resp = httpx.get(
+                    f"{API_BASE}/rail/timetable",
+                    params={"origin": rail_origin, "destination": rail_dest,
+                            "date": rail_date.isoformat()},
+                    timeout=30,
+                )
+                resp.raise_for_status()
+                tt = resp.json()
+            except httpx.ConnectError:
+                st.error("無法連接 FastAPI")
+                st.stop()
+            except httpx.HTTPStatusError as e:
+                detail = e.response.json().get("detail", {})
+                st.error(detail.get("error", "查詢失敗"))
+                if detail.get("suggestions"):
+                    st.info("你是不是要找：" + "、".join(detail["suggestions"]))
+                st.stop()
+
+        if tt.get("source") == "mock":
+            st.warning(tt.get("note", "此為示範資料"))
+
+        trains = tt.get("trains", [])
+        if not trains:
+            st.info("該日期查無直達班次（可能需轉乘，或日期超出可查詢範圍）")
+        else:
+            st.markdown(
+                f"**{tt['origin']['name']} → {tt['destination']['name']}**"
+                f"（{tt['date']}，共 {len(trains)} 班直達）"
+            )
+            st.dataframe(
+                [{
+                    "車次": t["train_no"],
+                    "車種": t["train_type"],
+                    "開車": t["departure"],
+                    "到達": t["arrival"],
+                    "行車時間": f"{t['duration_min'] // 60}h{t['duration_min'] % 60:02d}m"
+                                if t.get("duration_min") is not None else "—",
+                    "自行車": "✓" if t.get("bike_allowed") else "",
+                } for t in trains],
+                use_container_width=True, hide_index=True,
+            )
+            fares = tt.get("fares", [])
+            if fares:
+                st.markdown("**票價（一般票，單程）**")
+                for f in fares:
+                    child = f"、孩童 {f['child']} 元" if f.get("child") else ""
+                    st.markdown(f"- {'／'.join(f['train_types'])}：成人 {f['adult']} 元{child}")
+
+    st.divider()
+
+    st.subheader("車站即時看板")
+    rail_live_station = st.text_input("車站名稱", value="台北", key="rail_live_station")
+    if st.button("查詢即時動態", key="rail_live_btn"):
+        with st.spinner(f"查詢 {rail_live_station} 即時到離站中..."):
+            try:
+                resp = httpx.get(
+                    f"{API_BASE}/rail/liveboard",
+                    params={"station": rail_live_station},
+                    timeout=30,
+                )
+                resp.raise_for_status()
+                lb = resp.json()
+            except httpx.ConnectError:
+                st.error("無法連接 FastAPI")
+                st.stop()
+            except httpx.HTTPStatusError as e:
+                detail = e.response.json().get("detail", {})
+                st.error(detail.get("error", "查詢失敗"))
+                if detail.get("suggestions"):
+                    st.info("你是不是要找：" + "、".join(detail["suggestions"]))
+                st.stop()
+
+        if lb.get("source") == "mock":
+            st.warning(lb.get("note", "此為示範資料"))
+
+        boards = lb.get("boards", [])
+        if not boards:
+            st.info("目前沒有即將到離站的列車")
+        else:
+            st.markdown(f"**{lb['station']['name']}** 即時到離站（{lb.get('note', '')}）")
+            st.dataframe(
+                [{
+                    "車次": b["train_no"],
+                    "車種": b["train_type"],
+                    "方向": b["direction"],
+                    "終點站": b["ending_station"],
+                    "到站": b["scheduled_arrival"],
+                    "開車": b["scheduled_departure"],
+                    "月台": b.get("platform", ""),
+                    "狀態": ("🟢 " if b["delay_min"] <= 0 else
+                             "🟡 " if b["delay_min"] <= 10 else "🔴 ") + b["status"],
+                } for b in boards],
+                use_container_width=True, hide_index=True,
+            )

@@ -20,6 +20,10 @@ class Settings(BaseSettings):
     cwa_api_key: str = ""        # 中央氣象署
     google_places_api_key: str = ""
 
+    # TDX 運輸資料流通服務（台鐵時刻表/票價/即時動態）
+    tdx_client_id: str = ""
+    tdx_client_secret: str = ""
+
     # 路線規劃（OSRM，預設用官方公用 demo server，僅供開發/展示）
     osrm_base_url: str = "https://router.project-osrm.org"
 
